@@ -149,7 +149,7 @@ function CardProgress({
     >
       <div className="min-h-0 overflow-hidden">
         {snapshot && (
-          <div className="pt-3 pl-12">
+          <div className="pt-3 pl-10 sm:pl-12">
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/15">
               <div
                 className={`h-full rounded-full transition-[width,background-color] duration-200 ease-out ${
@@ -464,29 +464,31 @@ export function FileFeed({
               return (
                 <li
                   key={entryKey}
-                  className={`grid transition-[grid-template-rows,margin,opacity,transform] duration-240 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+                  className={`grid grid-cols-[minmax(0,1fr)] transition-[grid-template-rows,margin,opacity,transform] duration-240 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
                     isRemoving
                       ? 'pointer-events-none mb-0 translate-x-2 scale-[0.96] grid-rows-[0fr] opacity-0'
                       : 'animate-card-enter mb-2.5 grid-rows-[1fr] last:mb-0'
                   }`}
                 >
-                  <div className={`min-h-0 ${isRemoving ? 'overflow-hidden' : ''}`}>
-                    <div className="group rounded-2xl border border-white/[0.06] bg-gradient-to-br from-[#111111] via-[#151517] to-[#232327] px-5 py-4 text-white shadow-[0_2px_8px_rgba(17,17,17,0.12)] transition-[filter,box-shadow] duration-200 hover:brightness-115">
-                      <div className="flex items-center justify-between gap-5">
+                  <div
+                    className={`min-h-0 min-w-0 ${isRemoving ? 'overflow-hidden' : ''}`}
+                  >
+                    <div className="group rounded-2xl border border-white/[0.06] bg-gradient-to-br from-[#111111] via-[#151517] to-[#232327] px-3.5 py-3 text-white shadow-[0_2px_8px_rgba(17,17,17,0.12)] transition-[filter,box-shadow] duration-200 hover:brightness-115 sm:px-5 sm:py-4">
+                      <div className="flex min-w-0 items-center justify-between gap-3 sm:gap-5">
                         {/* Left: File Icon + Metadata + Filename */}
-                        <div className="flex min-w-0 flex-1 items-center gap-4">
+                        <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
                           <TypeIcon
-                            className={`h-8 w-8 shrink-0 stroke-[1.5] transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:-rotate-3 group-hover:scale-110 motion-reduce:transition-none ${colorClass}`}
+                            className={`h-7 w-7 shrink-0 stroke-[1.5] transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:-rotate-3 group-hover:scale-110 motion-reduce:transition-none sm:h-8 sm:w-8 ${colorClass}`}
                           />
 
                           <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs sm:gap-x-2">
                               <Avatar
                                 name={entry.ownerName}
                                 sizeClass="h-4.5 w-4.5"
                                 textClass="text-[9px]"
                               />
-                              <span className="truncate font-semibold text-zinc-200">
+                              <span className="max-w-[9rem] truncate font-semibold text-zinc-200 sm:max-w-none">
                                 {entry.ownerName}
                                 {isLocal && (
                                   <span className="ml-1 font-normal text-zinc-400">
@@ -505,7 +507,7 @@ export function FileFeed({
                             </div>
 
                             <p
-                              className="mt-1.5 max-w-[22rem] truncate text-sm font-normal tracking-tight text-white"
+                              className="mt-1.5 w-full max-w-[22rem] truncate text-sm font-normal tracking-tight text-white"
                               title={entry.file.name}
                             >
                               {entry.file.name}
