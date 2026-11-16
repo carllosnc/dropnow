@@ -34,7 +34,7 @@ export function TopBar({
   };
 
   return (
-    <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/[0.06] bg-white px-4 py-3 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+    <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-4 py-3">
       <div className="flex items-center gap-3">
         <div className="group flex items-center gap-2.5">
           <img
