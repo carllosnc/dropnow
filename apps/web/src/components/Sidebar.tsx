@@ -25,7 +25,7 @@ export function Sidebar({
     localFileCount + peers.reduce((sum, p) => sum + p.sharedFiles.length, 0);
 
   return (
-    <aside className="flex w-full shrink-0 flex-col rounded-2xl border border-black/[0.06] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.04)] md:h-full md:w-68 lg:w-72">
+    <aside className="flex w-full shrink-0 flex-col rounded-2xl bg-white md:h-full md:w-68 lg:w-72">
       {/* Users / Peers List */}
       <div className="flex-1 overflow-y-auto p-3">
         <div className="mb-2 flex items-center justify-between px-2.5 pt-1">
