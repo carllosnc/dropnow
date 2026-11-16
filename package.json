@@ -1,0 +1,22 @@
+{
+  "name": "dropnow",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "bun --filter @dropnow/worker --filter @dropnow/web dev",
+    "build": "bun --filter @dropnow/shared build && bun --filter @dropnow/web build && bun --filter @dropnow/worker build",
+    "test": "bun --filter '*' test",
+    "typecheck": "bun --filter '*' typecheck",
+    "deploy": "bun --filter @dropnow/web build && bun --filter @dropnow/worker deploy"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4"
+  }
+}
