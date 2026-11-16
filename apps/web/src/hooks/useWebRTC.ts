@@ -160,6 +160,11 @@ function toSharedFileInfo(entry: LocalSharedFile): SharedFileInfo {
 
 export interface UseWebRTCOptions {
   onPeerJoined?: (peer: { peerId: string; displayName: string }) => void;
+  onPeerFilesAdded?: (peer: {
+    peerId: string;
+    displayName: string;
+    files: SharedFileInfo[];
+  }) => void;
 }
 
 export function useWebRTC(
@@ -181,6 +186,8 @@ export function useWebRTC(
   displayNameRef.current = displayName;
   const onPeerJoinedRef = useRef(options?.onPeerJoined);
   onPeerJoinedRef.current = options?.onPeerJoined;
+  const onPeerFilesAddedRef = useRef(options?.onPeerFilesAdded);
+  onPeerFilesAddedRef.current = options?.onPeerFilesAdded;
 
   const wsRef = useRef<WebSocket | null>(null);
   const iceServersRef = useRef<IceServerConfig[]>([
@@ -387,8 +394,17 @@ export function useWebRTC(
       switch (msg.type) {
         case 'file-catalog': {
           if (peer) {
+            const prevIds = new Set(peer.sharedFiles.map((f) => f.fileId));
+            const addedFiles = msg.files.filter((f) => !prevIds.has(f.fileId));
             peer.sharedFiles = msg.files;
             syncPeersState();
+            if (addedFiles.length > 0) {
+              onPeerFilesAddedRef.current?.({
+                peerId: fromPeerId,
+                displayName: peer.info.displayName,
+                files: addedFiles,
+              });
+            }
           }
           break;
         }
