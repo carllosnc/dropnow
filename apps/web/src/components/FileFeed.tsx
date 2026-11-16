@@ -12,6 +12,7 @@ import {
   FileVideo,
   FolderUp,
   HardDriveDownload,
+  Plus,
   Trash2,
   X,
 } from 'lucide-react';
@@ -34,6 +35,7 @@ export interface FeedEntry {
 interface FileFeedProps {
   entries: FeedEntry[];
   transfers: TransferItem[];
+  onPickFiles: () => void;
   onAddFiles: (files: FileList) => void;
   onRemoveLocalFile: (fileId: string) => void;
   onDownloadFile: (
@@ -181,7 +183,7 @@ function getFileExtension(filename: string): string {
   return ext.length > 0 && ext.length <= 5 ? ext : 'FILE';
 }
 
-function getFileTypeIcon(filename: string, mimeType: string) {
+function getFileTypePresentation(filename: string, mimeType: string) {
   const ext = getFileExtension(filename).toLowerCase();
   const mime = mimeType.toLowerCase();
 
@@ -191,33 +193,33 @@ function getFileTypeIcon(filename: string, mimeType: string) {
       ext,
     )
   ) {
-    return FileImage;
+    return { Icon: FileImage, colorClass: 'text-sky-400' };
   }
   if (
     mime.startsWith('video/') ||
     ['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v'].includes(ext)
   ) {
-    return FileVideo;
+    return { Icon: FileVideo, colorClass: 'text-violet-400' };
   }
   if (
     mime.startsWith('audio/') ||
     ['mp3', 'wav', 'ogg', 'flac', 'm4a', 'aac'].includes(ext)
   ) {
-    return FileAudio;
+    return { Icon: FileAudio, colorClass: 'text-pink-400' };
   }
   if (
     ['zip', 'tar', 'gz', 'tgz', 'rar', '7z', 'xz', 'bz2'].includes(ext) ||
     mime.includes('zip') ||
     mime.includes('gzip')
   ) {
-    return FileArchive;
+    return { Icon: FileArchive, colorClass: 'text-amber-400' };
   }
   if (
     ['csv', 'xls', 'xlsx', 'ods'].includes(ext) ||
     mime.includes('spreadsheet') ||
     mime === 'text/csv'
   ) {
-    return FileSpreadsheet;
+    return { Icon: FileSpreadsheet, colorClass: 'text-emerald-400' };
   }
   if (
     [
@@ -248,28 +250,35 @@ function getFileTypeIcon(filename: string, mimeType: string) {
       'md',
     ].includes(ext)
   ) {
-    return FileCode;
+    return { Icon: FileCode, colorClass: 'text-lime-400' };
   }
   if (
     mime === 'application/pdf' ||
     mime.startsWith('text/') ||
     ['pdf', 'doc', 'docx', 'txt', 'rtf', 'odt'].includes(ext)
   ) {
-    return FileText;
+    return { Icon: FileText, colorClass: 'text-rose-400' };
   }
-  return FileIcon;
+  return { Icon: FileIcon, colorClass: 'text-zinc-400' };
+}
+
+function getEntryKey(entry: FeedEntry): string {
+  return `${entry.ownerId}:${entry.file.fileId}`;
 }
 
 export function FileFeed({
   entries,
   transfers,
+  onPickFiles,
   onAddFiles,
   onRemoveLocalFile,
   onDownloadFile,
   onCancelTransfer,
 }: FileFeedProps) {
   const [isDragging, setIsDragging] = useState(false);
-  const [removingIds, setRemovingIds] = useState<Set<string>>(() => new Set());
+  const [renderedEntries, setRenderedEntries] = useState<FeedEntry[]>(entries);
+  const [removingKeys, setRemovingKeys] = useState<Set<string>>(() => new Set());
+  const renderedRef = useRef<FeedEntry[]>(entries);
   const removeTimersRef = useRef<Map<string, number>>(new Map());
   const dragDepthRef = useRef(0);
   const hasFsAccess = supportsFileSystemAccess();
@@ -284,23 +293,65 @@ export function FileFeed({
     };
   }, []);
 
-  const handleDelete = (fileId: string) => {
-    if (removingIds.has(fileId)) return;
-    setRemovingIds((prev) => {
-      const next = new Set(prev);
-      next.add(fileId);
-      return next;
+  useEffect(() => {
+    const incomingMap = new Map(entries.map((e) => [getEntryKey(e), e]));
+    const revivedKeys: string[] = [];
+
+    for (const key of incomingMap.keys()) {
+      const timer = removeTimersRef.current.get(key);
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        removeTimersRef.current.delete(key);
+        revivedKeys.push(key);
+      }
+    }
+
+    const newlyRemoving: string[] = [];
+    const merged: FeedEntry[] = [...entries];
+
+    // Keep exiting items in place at their previous index while animating out
+    renderedRef.current.forEach((prevItem, prevIdx) => {
+      const key = getEntryKey(prevItem);
+      if (incomingMap.has(key)) return;
+
+      const insertAt = Math.min(prevIdx, merged.length);
+      merged.splice(insertAt, 0, prevItem);
+
+      if (!removeTimersRef.current.has(key)) {
+        newlyRemoving.push(key);
+        const timerId = window.setTimeout(() => {
+          removeTimersRef.current.delete(key);
+          const filtered = renderedRef.current.filter(
+            (item) => getEntryKey(item) !== key,
+          );
+          renderedRef.current = filtered;
+          setRenderedEntries(filtered);
+          setRemovingKeys((prev) => {
+            if (!prev.has(key)) return prev;
+            const next = new Set(prev);
+            next.delete(key);
+            return next;
+          });
+        }, 240);
+        removeTimersRef.current.set(key, timerId);
+      }
     });
-    const timerId = window.setTimeout(() => {
-      removeTimersRef.current.delete(fileId);
-      onRemoveLocalFile(fileId);
-      setRemovingIds((prev) => {
+
+    renderedRef.current = merged;
+    setRenderedEntries(merged);
+
+    if (revivedKeys.length > 0 || newlyRemoving.length > 0) {
+      setRemovingKeys((prev) => {
         const next = new Set(prev);
-        next.delete(fileId);
+        for (const k of revivedKeys) next.delete(k);
+        for (const k of newlyRemoving) next.add(k);
         return next;
       });
-    }, 240);
-    removeTimersRef.current.set(fileId, timerId);
+    }
+  }, [entries]);
+
+  const handleDelete = (fileId: string) => {
+    onRemoveLocalFile(fileId);
   };
 
   const hasFiles = (e: DragEvent<HTMLDivElement>) =>
@@ -342,10 +393,30 @@ export function FileFeed({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-black/[0.06] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.04)]"
+      className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl bg-white"
     >
+      <div className="flex items-center justify-between gap-3 border-b border-black/[0.06] px-4 py-3 sm:px-5">
+        <div className="flex items-center gap-2">
+          <h2 className="text-[11px] font-semibold tracking-wider text-zinc-500 uppercase">
+            Shared Files
+          </h2>
+          <span className="rounded-md bg-[#EDF2F8] px-1.5 py-0.5 font-mono text-[11px] font-medium text-zinc-600 tabular-nums">
+            {entries.length}
+          </span>
+        </div>
+
+        <button
+          type="button"
+          onClick={onPickFiles}
+          className="group/btn inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-500 active:scale-95"
+        >
+          <Plus className="h-3.5 w-3.5 transition-transform duration-200 group-hover/btn:rotate-90 motion-reduce:transition-none" />
+          Share files
+        </button>
+      </div>
+
       <div className="flex-1 overflow-y-auto p-4 sm:p-5">
-        {entries.length === 0 ? (
+        {renderedEntries.length === 0 ? (
           <div className="flex h-full min-h-[280px] flex-col items-center justify-center px-6 text-center">
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-600/10 text-blue-600">
               <FolderUp className="h-6 w-6" />
@@ -354,15 +425,16 @@ export function FileFeed({
               No files shared yet
             </p>
             <p className="mt-1 max-w-xs text-xs text-zinc-500">
-              Drop files anywhere here or click the + button to share with
-              connected peers.
+              Drop files anywhere here or click Share files to send to connected
+              peers.
             </p>
           </div>
         ) : (
           <ul>
-            {entries.map((entry) => {
+            {renderedEntries.map((entry) => {
+              const entryKey = getEntryKey(entry);
               const isLocal = entry.kind === 'local';
-              const isRemoving = isLocal && removingIds.has(entry.file.fileId);
+              const isRemoving = removingKeys.has(entryKey);
 
               const activeTransfer = !isLocal
                 ? transfers.find(
@@ -384,14 +456,14 @@ export function FileFeed({
                   )
                 : undefined;
 
-              const TypeIcon = getFileTypeIcon(
+              const { Icon: TypeIcon, colorClass } = getFileTypePresentation(
                 entry.file.name,
                 entry.file.mimeType,
               );
 
               return (
                 <li
-                  key={`${entry.ownerId}:${entry.file.fileId}`}
+                  key={entryKey}
                   className={`grid transition-[grid-template-rows,margin,opacity,transform] duration-240 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
                     isRemoving
                       ? 'pointer-events-none mb-0 translate-x-2 scale-[0.96] grid-rows-[0fr] opacity-0'
@@ -404,9 +476,7 @@ export function FileFeed({
                         {/* Left: File Icon + Metadata + Filename */}
                         <div className="flex min-w-0 flex-1 items-center gap-4">
                           <TypeIcon
-                            className={`h-8 w-8 shrink-0 stroke-[1.5] transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:-rotate-3 group-hover:scale-110 motion-reduce:transition-none ${
-                              isLocal ? 'text-zinc-300' : 'text-white'
-                            }`}
+                            className={`h-8 w-8 shrink-0 stroke-[1.5] transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:-rotate-3 group-hover:scale-110 motion-reduce:transition-none ${colorClass}`}
                           />
 
                           <div className="min-w-0 flex-1">
@@ -515,7 +585,7 @@ export function FileFeed({
         aria-hidden={!isDragging}
         className={`pointer-events-none absolute inset-0 z-20 flex p-4 transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
           isDragging
-            ? 'scale-100 bg-[#EDF2FA]/85 opacity-100 backdrop-blur-sm'
+            ? 'scale-100 bg-[#DEE9F9]/85 opacity-100 backdrop-blur-sm'
             : 'scale-[0.985] opacity-0'
         }`}
       >
