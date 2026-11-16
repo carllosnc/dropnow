@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Plus } from 'lucide-react';
 import { FileFeed, type FeedEntry } from './components/FileFeed.js';
 import { Sidebar } from './components/Sidebar.js';
 import { ToastContainer, type ToastItem } from './components/Toast.js';
@@ -60,12 +59,12 @@ export function App() {
     toastTimersRef.current.set(`remove:${id}`, removeTimer);
   }, []);
 
-  const handlePeerJoined = useCallback(
-    (peer: { peerId: string; displayName: string }) => {
+  const pushToast = useCallback(
+    (peerName: string, message: string) => {
       const id = generateId(8);
       setToasts((prev) => [
         ...prev.slice(-2),
-        { id, peerName: peer.displayName, leaving: false },
+        { id, peerName, message, leaving: false },
       ]);
       const timer = window.setTimeout(() => {
         dismissToast(id);
@@ -73,6 +72,37 @@ export function App() {
       toastTimersRef.current.set(id, timer);
     },
     [dismissToast],
+  );
+
+  const handlePeerJoined = useCallback(
+    (peer: { peerId: string; displayName: string }) => {
+      pushToast(peer.displayName, 'joined the room');
+    },
+    [pushToast],
+  );
+
+  const notifyFilesAdded = useCallback(
+    (ownerName: string, files: { name: string }[]) => {
+      if (files.length === 0) return;
+      const firstFile = files[0];
+      const message =
+        files.length === 1 && firstFile
+          ? `shared ${firstFile.name}`
+          : `shared ${files.length} files`;
+      pushToast(ownerName, message);
+    },
+    [pushToast],
+  );
+
+  const handlePeerFilesAdded = useCallback(
+    (peer: {
+      peerId: string;
+      displayName: string;
+      files: { name: string }[];
+    }) => {
+      notifyFilesAdded(peer.displayName, peer.files);
+    },
+    [notifyFilesAdded],
   );
 
   const {
@@ -88,7 +118,18 @@ export function App() {
     cancelTransfer,
   } = useWebRTC(roomId, displayName, localPeerId, {
     onPeerJoined: handlePeerJoined,
+    onPeerFilesAdded: handlePeerFilesAdded,
   });
+
+  const handleAddSharedFiles = useCallback(
+    (fileList: FileList | File[]) => {
+      const incoming = Array.from(fileList);
+      if (incoming.length === 0) return;
+      addSharedFiles(incoming);
+      notifyFilesAdded(displayName.trim() || 'You', incoming);
+    },
+    [addSharedFiles, displayName, notifyFilesAdded],
+  );
 
   const entries = useMemo(() => {
     const list: FeedEntry[] = [];
@@ -143,7 +184,7 @@ export function App() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col bg-[#EDF2FA] px-4 py-5 text-[#111111] sm:px-6 lg:px-10">
+    <div className="flex min-h-screen flex-col bg-[#DEE9F9] px-4 py-5 text-[#111111] sm:px-6 lg:px-10">
       {/* Main Framed Workspace */}
       <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-3 md:h-[calc(100vh-2.5rem)] md:flex-none">
         <TopBar
@@ -177,7 +218,8 @@ export function App() {
             <FileFeed
               entries={entries}
               transfers={transfers}
-              onAddFiles={addSharedFiles}
+              onPickFiles={() => fileInputRef.current?.click()}
+              onAddFiles={handleAddSharedFiles}
               onRemoveLocalFile={removeSharedFile}
               onDownloadFile={downloadFile}
               onCancelTransfer={cancelTransfer}
@@ -186,7 +228,7 @@ export function App() {
         </div>
       </div>
 
-      {/* Floating Share Files Button */}
+      {/* Hidden File Input */}
       <input
         ref={fileInputRef}
         type="file"
@@ -194,20 +236,11 @@ export function App() {
         className="hidden"
         onChange={(e) => {
           if (e.target.files && e.target.files.length > 0) {
-            addSharedFiles(e.target.files);
+            handleAddSharedFiles(e.target.files);
             e.target.value = '';
           }
         }}
       />
-      <button
-        type="button"
-        onClick={() => fileInputRef.current?.click()}
-        className="group fixed right-6 bottom-6 z-30 flex h-13 w-13 items-center justify-center rounded-full bg-[#111111] text-white shadow-xl shadow-black/20 transition hover:scale-105 hover:bg-blue-600 active:scale-95"
-        title="Share Files"
-        aria-label="Share Files"
-      >
-        <Plus className="h-5 w-5 transition-transform duration-200 ease-out group-hover:rotate-90 motion-reduce:transition-none" />
-      </button>
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
