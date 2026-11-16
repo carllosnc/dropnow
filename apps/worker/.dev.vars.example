@@ -1,0 +1,3 @@
+# Cloudflare Realtime TURN credentials (obtain from Cloudflare Dashboard -> Calls / Realtime -> TURN)
+TURN_KEY_ID=your_turn_key_id
+TURN_KEY_API_TOKEN=your_turn_api_token
