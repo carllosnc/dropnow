@@ -355,6 +355,12 @@ export function FileFeed({
   useEffect(() => {
     const prevKeys = new Set(renderedRef.current.map(getEntryKey));
     const incomingMap = new Map(entries.map((e) => [getEntryKey(e), e]));
+    const activeOwners = new Set(entries.map((e) => e.ownerId));
+    for (const ownerId of ownerColorMapRef.current.keys()) {
+      if (!activeOwners.has(ownerId)) {
+        ownerColorMapRef.current.delete(ownerId);
+      }
+    }
     const revivedKeys: string[] = [];
     const newBatchDelays = new Map<string, number>();
     let batchIndex = 0;
