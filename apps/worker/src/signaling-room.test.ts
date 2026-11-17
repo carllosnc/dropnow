@@ -449,4 +449,93 @@ describe('SignalingRoom', () => {
     expect(mockHost.closed).toBe(true);
     expect(mockGuest.closed).toBe(true);
   });
+
+  it('disconnects all remaining peers when the host leaves', async () => {
+    const { room, addPeerSocket } = createMockRoom();
+    const mockHost = createMockSocket();
+    const mockGuest = createMockSocket();
+
+    const wsHost = addPeerSocket(mockHost);
+    const wsGuest = addPeerSocket(mockGuest);
+
+    await room.webSocketMessage(
+      wsHost,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-leave',
+        peerId: 'peer_host',
+        displayName: 'Host',
+      }),
+    );
+    await room.webSocketMessage(
+      wsGuest,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-leave',
+        peerId: 'peer_guest',
+        displayName: 'Guest',
+      }),
+    );
+
+    await room.webSocketClose(wsHost, 1000, 'Host navigated away');
+
+    expect(
+      mockGuest.sent.map(
+        (s) => JSON.parse(s) as { type: string; reason?: string },
+      ),
+    ).toContainEqual({
+      type: 'room-closed',
+      reason: 'The host left this room.',
+    });
+    expect(mockGuest.closed).toBe(true);
+  });
+
+  it('broadcasts peer-updated when a peer changes displayName', async () => {
+    const { room, addPeerSocket } = createMockRoom();
+    const mockHost = createMockSocket();
+    const mockGuest = createMockSocket();
+
+    const wsHost = addPeerSocket(mockHost);
+    const wsGuest = addPeerSocket(mockGuest);
+
+    await room.webSocketMessage(
+      wsHost,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-rename',
+        peerId: 'peer_host',
+        displayName: 'Old Name',
+      }),
+    );
+    await room.webSocketMessage(
+      wsGuest,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-rename',
+        peerId: 'peer_guest',
+        displayName: 'Guest',
+      }),
+    );
+
+    await room.webSocketMessage(
+      wsHost,
+      JSON.stringify({
+        type: 'update-name',
+        displayName: 'New Name',
+      }),
+    );
+
+    expect(
+      mockGuest.sent.map(
+        (s) =>
+          JSON.parse(s) as {
+            type: string;
+            peer?: { peerId: string; displayName: string };
+          },
+      ),
+    ).toContainEqual({
+      type: 'peer-updated',
+      peer: { peerId: 'peer_host', displayName: 'New Name' },
+    });
+  });
 });
