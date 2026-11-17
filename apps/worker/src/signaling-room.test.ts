@@ -52,12 +52,24 @@ function createMockSocket(): MockSocket {
 
 function createMockRoom() {
   const sockets: MockSocket[] = [];
+  const store = new Map<string, unknown>();
   const ctx = {
     acceptWebSocket(ws: MockSocket) {
       sockets.push(ws);
     },
     getWebSockets() {
       return sockets.filter((s) => !s.closed);
+    },
+    storage: {
+      async get<T>(key: string): Promise<T | undefined> {
+        return store.get(key) as T | undefined;
+      },
+      async put(key: string, value: unknown): Promise<void> {
+        store.set(key, value);
+      },
+      async delete(key: string): Promise<boolean> {
+        return store.delete(key);
+      },
     },
   };
 
@@ -140,6 +152,7 @@ describe('SignalingRoom', () => {
       type: 'room-peers',
       roomId: 'room-1',
       peers: [],
+      isHost: true,
     });
 
     // Peer B joins
@@ -157,6 +170,7 @@ describe('SignalingRoom', () => {
       type: 'room-peers',
       roomId: 'room-1',
       peers: [{ peerId: 'peer_aaaa', displayName: 'Alpha' }],
+      isHost: false,
     });
     expect(JSON.parse(mockWsA.sent[1] ?? '{}')).toEqual({
       type: 'peer-joined',
@@ -261,5 +275,178 @@ describe('SignalingRoom', () => {
     const messagesForB = mockWsB.sent.map((raw) => JSON.parse(raw) as { type: string });
     expect(messagesForB.some((m) => m.type === 'peer-left')).toBe(false);
     expect(mockWsA1.closed).toBe(true);
+  });
+
+  it('enforces room password and clears it after the last peer leaves', async () => {
+    const { room, addPeerSocket } = createMockRoom();
+    const mockHost = createMockSocket();
+    const mockNoPass = createMockSocket();
+    const mockWrongPass = createMockSocket();
+    const mockRightPass = createMockSocket();
+    const mockLaterPeer = createMockSocket();
+
+    const wsHost = addPeerSocket(mockHost);
+    const wsNoPass = addPeerSocket(mockNoPass);
+    const wsWrongPass = addPeerSocket(mockWrongPass);
+    const wsRightPass = addPeerSocket(mockRightPass);
+    const wsLaterPeer = addPeerSocket(mockLaterPeer);
+
+    // Host creates a password-protected room
+    await room.webSocketMessage(
+      wsHost,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-sec',
+        peerId: 'peer_host',
+        displayName: 'Host',
+        password: 'secret-pass',
+      }),
+    );
+    expect(JSON.parse(mockHost.sent[0] ?? '{}')).toMatchObject({
+      type: 'room-peers',
+      peers: [],
+    });
+
+    // Missing password is rejected
+    await room.webSocketMessage(
+      wsNoPass,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-sec',
+        peerId: 'peer_nopass',
+        displayName: 'NoPass',
+      }),
+    );
+    expect(JSON.parse(mockNoPass.sent[0] ?? '{}')).toMatchObject({
+      type: 'error',
+      code: 'PASSWORD_REQUIRED',
+    });
+    expect(mockNoPass.closed).toBe(true);
+
+    // Wrong password is rejected
+    await room.webSocketMessage(
+      wsWrongPass,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-sec',
+        peerId: 'peer_wrong',
+        displayName: 'Wrong',
+        password: 'bad-password',
+      }),
+    );
+    expect(JSON.parse(mockWrongPass.sent[0] ?? '{}')).toMatchObject({
+      type: 'error',
+      code: 'INVALID_PASSWORD',
+    });
+    expect(mockWrongPass.closed).toBe(true);
+
+    // Correct password succeeds
+    await room.webSocketMessage(
+      wsRightPass,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-sec',
+        peerId: 'peer_right',
+        displayName: 'Guest',
+        password: 'secret-pass',
+      }),
+    );
+    expect(JSON.parse(mockRightPass.sent[0] ?? '{}')).toMatchObject({
+      type: 'room-peers',
+      peers: [{ peerId: 'peer_host', displayName: 'Host' }],
+    });
+
+    // Both peers disconnect -> room password is cleared
+    await room.webSocketClose(wsHost, 1000, 'Done');
+    await room.webSocketClose(wsRightPass, 1000, 'Done');
+
+    // New peer can now join without the old password
+    await room.webSocketMessage(
+      wsLaterPeer,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-sec',
+        peerId: 'peer_later',
+        displayName: 'Later',
+      }),
+    );
+    expect(JSON.parse(mockLaterPeer.sent[0] ?? '{}')).toMatchObject({
+      type: 'room-peers',
+      peers: [],
+    });
+  });
+
+  it('allows only the host to shut down the room and disconnects all peers', async () => {
+    const { room, addPeerSocket } = createMockRoom();
+    const mockHost = createMockSocket();
+    const mockGuest = createMockSocket();
+
+    const wsHost = addPeerSocket(mockHost);
+    const wsGuest = addPeerSocket(mockGuest);
+
+    await room.webSocketMessage(
+      wsHost,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-sd',
+        peerId: 'peer_host',
+        displayName: 'Host',
+      }),
+    );
+    expect(JSON.parse(mockHost.sent[0] ?? '{}')).toMatchObject({
+      type: 'room-peers',
+      isHost: true,
+    });
+
+    await room.webSocketMessage(
+      wsGuest,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-sd',
+        peerId: 'peer_guest',
+        displayName: 'Guest',
+      }),
+    );
+    expect(JSON.parse(mockGuest.sent[0] ?? '{}')).toMatchObject({
+      type: 'room-peers',
+      isHost: false,
+    });
+
+    // Non-host cannot shut down the room
+    await room.webSocketMessage(
+      wsGuest,
+      JSON.stringify({ type: 'shutdown-room' }),
+    );
+    expect(JSON.parse(mockGuest.sent[1] ?? '{}')).toMatchObject({
+      type: 'error',
+      code: 'FORBIDDEN',
+    });
+    expect(mockHost.closed).toBe(false);
+    expect(mockGuest.closed).toBe(false);
+
+    // Host shuts down the room -> everyone gets room-closed and is disconnected
+    await room.webSocketMessage(
+      wsHost,
+      JSON.stringify({ type: 'shutdown-room' }),
+    );
+
+    expect(
+      mockHost.sent.map(
+        (s) => JSON.parse(s) as { type: string; reason?: string },
+      ),
+    ).toContainEqual({
+      type: 'room-closed',
+      reason: 'The host closed this room.',
+    });
+    expect(
+      mockGuest.sent.map(
+        (s) => JSON.parse(s) as { type: string; reason?: string },
+      ),
+    ).toContainEqual({
+      type: 'room-closed',
+      reason: 'The host closed this room.',
+    });
+    expect(mockHost.closed).toBe(true);
+    expect(mockGuest.closed).toBe(true);
   });
 });
