@@ -70,5 +70,5 @@ export function generateId(length = 12): string {
 
 export function getAvatarUrl(seed: string): string {
   const normalized = seed.trim() || 'dropnow';
-  return `https://api.dicebear.com/9.x/thumbs/svg?seed=${encodeURIComponent(normalized)}`;
+  return `https://api.dicebear.com/10.x/marbles/svg?seed=${encodeURIComponent(normalized)}`;
 }
