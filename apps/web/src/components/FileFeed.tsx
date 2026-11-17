@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type DragEvent } from 'react';
 import {
   CheckCircle2,
   Download,
+  Eye,
   FileArchive,
   FileAudio,
   FileCode,
@@ -35,6 +36,7 @@ export interface FeedEntry {
 interface FileFeedProps {
   entries: FeedEntry[];
   transfers: TransferItem[];
+  isZipping?: boolean;
   onPickFiles: () => void;
   onAddFiles: (files: FileList) => void;
   onRemoveLocalFile: (fileId: string) => void;
@@ -43,6 +45,10 @@ interface FileFeedProps {
     file: SharedFileInfo,
     useFilePicker: boolean,
   ) => void;
+  onDownloadAll: (
+    items: Array<{ peerId: string; fileInfo: SharedFileInfo }>,
+  ) => void;
+  onPreviewEntry: (entry: FeedEntry) => void;
   onCancelTransfer: (transferId: string) => void;
 }
 
@@ -262,6 +268,26 @@ function getFileTypePresentation(filename: string, mimeType: string) {
   return { Icon: FileIcon, colorClass: 'text-zinc-400' };
 }
 
+const LOCAL_CARD_GRADIENT = 'from-[#111111] via-[#161618] to-[#232327]';
+
+const REMOTE_CARD_GRADIENTS = [
+  'from-[#122630] via-[#162E3A] to-[#1E3D4C]',
+  'from-[#292E13] via-[#313718] to-[#3E461F]',
+  'from-[#331415] via-[#3C181A] to-[#4A1F22]',
+  'from-[#251330] via-[#2D183B] to-[#391F4B]',
+  'from-[#121930] via-[#17203C] to-[#1F2B4D]',
+  'from-[#112A1E] via-[#153325] to-[#1D4230]',
+  'from-[#2E2012] via-[#382716] to-[#46311D]',
+] as const;
+
+function hashOwnerId(ownerId: string): number {
+  let hash = 0;
+  for (let i = 0; i < ownerId.length; i++) {
+    hash = (hash * 31 + ownerId.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+}
+
 function getEntryKey(entry: FeedEntry): string {
   return `${entry.ownerId}:${entry.file.fileId}`;
 }
@@ -269,19 +295,52 @@ function getEntryKey(entry: FeedEntry): string {
 export function FileFeed({
   entries,
   transfers,
+  isZipping = false,
   onPickFiles,
   onAddFiles,
   onRemoveLocalFile,
   onDownloadFile,
+  onDownloadAll,
+  onPreviewEntry,
   onCancelTransfer,
 }: FileFeedProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [renderedEntries, setRenderedEntries] = useState<FeedEntry[]>(entries);
   const [removingKeys, setRemovingKeys] = useState<Set<string>>(() => new Set());
+  const [enterDelays, setEnterDelays] = useState<Map<string, number>>(
+    () =>
+      new Map(
+        entries.map((entry, idx) => [
+          getEntryKey(entry),
+          Math.min(idx * 45, 540),
+        ]),
+      ),
+  );
   const renderedRef = useRef<FeedEntry[]>(entries);
   const removeTimersRef = useRef<Map<string, number>>(new Map());
+  const ownerColorMapRef = useRef<Map<string, number>>(new Map());
   const dragDepthRef = useRef(0);
   const hasFsAccess = supportsFileSystemAccess();
+
+  const getCardGradient = (ownerId: string): string => {
+    if (ownerId === 'me') return LOCAL_CARD_GRADIENT;
+    const map = ownerColorMapRef.current;
+    let idx = map.get(ownerId);
+    if (idx === undefined) {
+      const used = new Set(map.values());
+      const start = hashOwnerId(ownerId) % REMOTE_CARD_GRADIENTS.length;
+      idx = start;
+      for (let offset = 0; offset < REMOTE_CARD_GRADIENTS.length; offset++) {
+        const candidate = (start + offset) % REMOTE_CARD_GRADIENTS.length;
+        if (!used.has(candidate)) {
+          idx = candidate;
+          break;
+        }
+      }
+      map.set(ownerId, idx);
+    }
+    return REMOTE_CARD_GRADIENTS[idx] ?? REMOTE_CARD_GRADIENTS[0];
+  };
 
   useEffect(() => {
     const timers = removeTimersRef.current;
@@ -294,16 +353,34 @@ export function FileFeed({
   }, []);
 
   useEffect(() => {
+    const prevKeys = new Set(renderedRef.current.map(getEntryKey));
     const incomingMap = new Map(entries.map((e) => [getEntryKey(e), e]));
     const revivedKeys: string[] = [];
+    const newBatchDelays = new Map<string, number>();
+    let batchIndex = 0;
 
     for (const key of incomingMap.keys()) {
+      if (!prevKeys.has(key)) {
+        newBatchDelays.set(key, Math.min(batchIndex * 45, 540));
+        batchIndex += 1;
+      }
+
       const timer = removeTimersRef.current.get(key);
       if (timer !== undefined) {
         window.clearTimeout(timer);
         removeTimersRef.current.delete(key);
         revivedKeys.push(key);
       }
+    }
+
+    if (newBatchDelays.size > 0) {
+      setEnterDelays((prev) => {
+        const next = new Map(prev);
+        for (const [key, delay] of newBatchDelays) {
+          next.set(key, delay);
+        }
+        return next;
+      });
     }
 
     const newlyRemoving: string[] = [];
@@ -352,6 +429,28 @@ export function FileFeed({
 
   const handleDelete = (fileId: string) => {
     onRemoveLocalFile(fileId);
+  };
+
+  const downloadableEntries = entries.filter((entry) => {
+    if (entry.kind !== 'peer' || !entry.isPeerReady) return false;
+    return !transfers.some(
+      (t) =>
+        t.direction === 'incoming' &&
+        t.purpose !== 'preview' &&
+        t.peerId === entry.ownerId &&
+        t.fileId === entry.file.fileId &&
+        (t.status === 'transferring' || t.status === 'completed'),
+    );
+  });
+
+  const handleDownloadAll = () => {
+    if (isZipping || downloadableEntries.length === 0) return;
+    onDownloadAll(
+      downloadableEntries.map((entry) => ({
+        peerId: entry.ownerId,
+        fileInfo: entry.file,
+      })),
+    );
   };
 
   const hasFiles = (e: DragEvent<HTMLDivElement>) =>
@@ -405,14 +504,29 @@ export function FileFeed({
           </span>
         </div>
 
-        <button
-          type="button"
-          onClick={onPickFiles}
-          className="group/btn inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-500 active:scale-95"
-        >
-          <Plus className="h-3.5 w-3.5 transition-transform duration-200 group-hover/btn:rotate-90 motion-reduce:transition-none" />
-          Share files
-        </button>
+        <div className="flex items-center gap-2">
+          {(downloadableEntries.length > 0 || isZipping) && (
+            <button
+              type="button"
+              disabled={isZipping}
+              onClick={handleDownloadAll}
+              className="group/btn inline-flex items-center gap-1.5 rounded-xl border border-black/[0.12] bg-[#EDF2F8] px-3 py-1.5 text-xs font-semibold text-[#111111] transition hover:border-black/[0.18] hover:bg-[#E2E9F4] active:scale-95 disabled:cursor-wait disabled:opacity-60"
+              title={`Download ${downloadableEntries.length} ${downloadableEntries.length === 1 ? 'file' : 'files'} as ZIP`}
+            >
+              <Download className="h-3.5 w-3.5 text-blue-600 transition-transform duration-200 group-hover/btn:translate-y-0.5 motion-reduce:transition-none" />
+              <span>{isZipping ? 'Zipping...' : 'Download all (.zip)'}</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={onPickFiles}
+            className="group/btn inline-flex items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm shadow-blue-600/20 transition hover:bg-blue-500 active:scale-95"
+          >
+            <Plus className="h-3.5 w-3.5 transition-transform duration-200 group-hover/btn:rotate-90 motion-reduce:transition-none" />
+            Share files
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 sm:p-5">
@@ -450,6 +564,7 @@ export function FileFeed({
                 ? transfers.find(
                     (t) =>
                       t.direction === 'incoming' &&
+                      t.purpose !== 'preview' &&
                       t.peerId === entry.ownerId &&
                       t.fileId === entry.file.fileId &&
                       t.status === 'completed',
@@ -460,10 +575,18 @@ export function FileFeed({
                 entry.file.name,
                 entry.file.mimeType,
               );
+              const cardGradient = getCardGradient(entry.ownerId);
 
               return (
                 <li
                   key={entryKey}
+                  style={
+                    !isRemoving
+                      ? {
+                          animationDelay: `${enterDelays.get(entryKey) ?? 0}ms`,
+                        }
+                      : undefined
+                  }
                   className={`grid grid-cols-[minmax(0,1fr)] transition-[grid-template-rows,margin,opacity,transform] duration-240 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
                     isRemoving
                       ? 'pointer-events-none mb-0 translate-x-2 scale-[0.96] grid-rows-[0fr] opacity-0'
@@ -473,10 +596,16 @@ export function FileFeed({
                   <div
                     className={`min-h-0 min-w-0 ${isRemoving ? 'overflow-hidden' : ''}`}
                   >
-                    <div className="group rounded-2xl border border-white/[0.06] bg-gradient-to-br from-[#111111] via-[#151517] to-[#232327] px-3.5 py-3 text-white shadow-[0_2px_8px_rgba(17,17,17,0.12)] transition-[filter,box-shadow] duration-200 hover:brightness-115 sm:px-5 sm:py-4">
+                    <div
+                      className={`group rounded-2xl border border-white/[0.06] bg-gradient-to-br ${cardGradient} px-3.5 py-3 text-white shadow-[0_2px_8px_rgba(17,17,17,0.12)] transition-[filter,box-shadow] duration-200 hover:brightness-115 sm:px-5 sm:py-4`}
+                    >
                       <div className="flex min-w-0 items-center justify-between gap-3 sm:gap-5">
                         {/* Left: File Icon + Metadata + Filename */}
-                        <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
+                        <button
+                          type="button"
+                          onClick={() => onPreviewEntry(entry)}
+                          className="flex min-w-0 flex-1 items-center gap-3 text-left sm:gap-4"
+                        >
                           <TypeIcon
                             className={`h-7 w-7 shrink-0 stroke-[1.5] transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:-rotate-3 group-hover:scale-110 motion-reduce:transition-none sm:h-8 sm:w-8 ${colorClass}`}
                           />
@@ -504,6 +633,12 @@ export function FileFeed({
                               <span className="shrink-0 rounded-md bg-white/10 px-1.5 py-0.5 font-mono text-[11px] font-medium text-zinc-200 tabular-nums">
                                 {formatBytes(entry.file.size)}
                               </span>
+                              {completedTransfer && (
+                                <CheckCircle2
+                                  className="h-3.5 w-3.5 shrink-0 text-emerald-400"
+                                  aria-label="Downloaded"
+                                />
+                              )}
                             </div>
 
                             <p
@@ -513,10 +648,21 @@ export function FileFeed({
                               {entry.file.name}
                             </p>
                           </div>
-                        </div>
+                        </button>
 
-                        {/* Right: Icon Action */}
-                        {isLocal ? (
+                        {/* Right: Icon Actions */}
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => onPreviewEntry(entry)}
+                            className="group/btn flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/10 text-zinc-300 transition hover:bg-white/20 hover:text-white active:scale-90"
+                            title="Preview file"
+                            aria-label="Preview file"
+                          >
+                            <Eye className="h-4 w-4 transition-transform duration-150 group-hover/btn:scale-110 motion-reduce:transition-none" />
+                          </button>
+
+                          {isLocal ? (
                           <button
                             type="button"
                             onClick={() => handleDelete(entry.file.fileId)}
@@ -539,35 +685,28 @@ export function FileFeed({
                             <X className="h-4 w-4 transition-transform duration-150 group-hover/btn:rotate-90 motion-reduce:transition-none" />
                           </button>
                         ) : (
-                          <div className="flex shrink-0 items-center gap-2">
-                            {completedTransfer && (
-                              <CheckCircle2
-                                className="h-4 w-4 text-emerald-400"
-                                aria-label="Downloaded"
-                              />
+                          <button
+                            type="button"
+                            disabled={!entry.isPeerReady}
+                            onClick={() =>
+                              onDownloadFile(
+                                entry.ownerId,
+                                entry.file,
+                                hasFsAccess,
+                              )
+                            }
+                            className="group/btn flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white transition hover:bg-blue-500 active:scale-90 disabled:cursor-not-allowed disabled:opacity-35"
+                            title={hasFsAccess ? 'Save to disk' : 'Download'}
+                            aria-label="Download file"
+                          >
+                            {hasFsAccess ? (
+                              <HardDriveDownload className="h-4 w-4 transition-transform duration-150 group-hover/btn:translate-y-0.5 motion-reduce:transition-none" />
+                            ) : (
+                              <Download className="h-4 w-4 transition-transform duration-150 group-hover/btn:translate-y-0.5 motion-reduce:transition-none" />
                             )}
-                            <button
-                              type="button"
-                              disabled={!entry.isPeerReady}
-                              onClick={() =>
-                                onDownloadFile(
-                                  entry.ownerId,
-                                  entry.file,
-                                  hasFsAccess,
-                                )
-                              }
-                              className="group/btn flex h-9 w-9 items-center justify-center rounded-xl bg-blue-600 text-white transition hover:bg-blue-500 active:scale-90 disabled:cursor-not-allowed disabled:opacity-35"
-                              title={hasFsAccess ? 'Save to disk' : 'Download'}
-                              aria-label="Download file"
-                            >
-                              {hasFsAccess ? (
-                                <HardDriveDownload className="h-4 w-4 transition-transform duration-150 group-hover/btn:translate-y-0.5 motion-reduce:transition-none" />
-                              ) : (
-                                <Download className="h-4 w-4 transition-transform duration-150 group-hover/btn:translate-y-0.5 motion-reduce:transition-none" />
-                              )}
-                            </button>
-                          </div>
+                          </button>
                         )}
+                        </div>
                       </div>
 
                       <CardProgress
