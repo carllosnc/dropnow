@@ -82,6 +82,7 @@ interface PeerRuntime {
 
 interface OutgoingTransferRuntime {
   transferId: string;
+  fileId: string;
   targetPeerId: string;
   file: File;
   cancelled: boolean;
@@ -268,6 +269,12 @@ export function useWebRTC(
     [],
   );
 
+  const removeTransfer = useCallback((transferId: string) => {
+    setTransfers((prev) =>
+      prev.filter((item) => item.transferId !== transferId),
+    );
+  }, []);
+
   const sendSignaling = useCallback((message: ClientSignalingMessage) => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -328,12 +335,23 @@ export function useWebRTC(
 
   const removeSharedFile = useCallback(
     (fileId: string) => {
+      for (const [transferId, outgoing] of outgoingRef.current.entries()) {
+        if (outgoing.fileId !== fileId) continue;
+        outgoing.cancelled = true;
+        outgoingRef.current.delete(transferId);
+        sendControl(outgoing.targetPeerId, {
+          type: 'file-cancel',
+          transferId,
+        });
+        updateTransfer(transferId, { status: 'cancelled', speedBps: 0 });
+      }
+
       const next = sharedFilesRef.current.filter((f) => f.fileId !== fileId);
       sharedFilesRef.current = next;
       setSharedFiles(next);
       broadcastCatalog(next);
     },
-    [broadcastCatalog],
+    [broadcastCatalog, sendControl, updateTransfer],
   );
 
   const startOutgoingStream = useCallback(
@@ -465,6 +483,7 @@ export function useWebRTC(
 
           const runtime: OutgoingTransferRuntime = {
             transferId: msg.transferId,
+            fileId: entry.fileId,
             targetPeerId: fromPeerId,
             file: entry.file,
             cancelled: false,
@@ -837,26 +856,34 @@ export function useWebRTC(
     }
 
     let disposed = false;
+    let closedByServer = false;
+    let reconnectAttempt = 0;
+    let reconnectTimer: number | null = null;
+    let turnFetched = false;
 
     const connect = async () => {
+      if (disposed || closedByServer) return;
       setWsStatus('connecting');
       setError(null);
 
-      try {
-        const res = await fetch('/api/turn-credentials');
-        if (res.ok) {
-          const raw: unknown = await res.json();
-          const parsed = TurnCredentialsResponseSchema.safeParse(raw);
-          if (parsed.success && !disposed) {
-            iceServersRef.current = parsed.data.iceServers;
-            setTurnEnabled(parsed.data.turnEnabled);
+      if (!turnFetched) {
+        turnFetched = true;
+        try {
+          const res = await fetch('/api/turn-credentials');
+          if (res.ok) {
+            const raw: unknown = await res.json();
+            const parsed = TurnCredentialsResponseSchema.safeParse(raw);
+            if (parsed.success && !disposed) {
+              iceServersRef.current = parsed.data.iceServers;
+              setTurnEnabled(parsed.data.turnEnabled);
+            }
           }
+        } catch {
+          if (!disposed) setTurnEnabled(false);
         }
-      } catch {
-        if (!disposed) setTurnEnabled(false);
       }
 
-      if (disposed) return;
+      if (disposed || closedByServer) return;
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/ws/${encodeURIComponent(roomId)}`;
@@ -868,6 +895,7 @@ export function useWebRTC(
           ws.close();
           return;
         }
+        reconnectAttempt = 0;
         setWsStatus('connected');
         const password = roomPasswordRef.current;
         const joinedName = displayNameRef.current.trim() || 'Anonymous Peer';
@@ -889,9 +917,15 @@ export function useWebRTC(
       };
 
       ws.onclose = () => {
-        if (!disposed) {
-          setWsStatus('disconnected');
-        }
+        if (disposed) return;
+        setWsStatus('disconnected');
+        if (closedByServer) return;
+        const delayMs = Math.min(1000 * 2 ** reconnectAttempt, 10_000);
+        reconnectAttempt += 1;
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = null;
+          void connect();
+        }, delayMs);
       };
 
       ws.onmessage = async (event) => {
@@ -918,8 +952,17 @@ export function useWebRTC(
             break;
           }
           case 'peer-joined': {
-            const isInitiator = localPeerId.localeCompare(msg.peer.peerId) < 0;
-            createPeerRuntime(msg.peer, isInitiator);
+            const existing = peersRef.current.get(msg.peer.peerId);
+            if (existing) {
+              existing.info = {
+                ...existing.info,
+                displayName: msg.peer.displayName,
+              };
+              syncPeersState();
+            } else {
+              const isInitiator = localPeerId.localeCompare(msg.peer.peerId) < 0;
+              createPeerRuntime(msg.peer, isInitiator);
+            }
             onPeerJoinedRef.current?.(msg.peer);
             break;
           }
@@ -1007,6 +1050,7 @@ export function useWebRTC(
             break;
           }
           case 'room-closed': {
+            closedByServer = true;
             abortActiveTransfers();
             for (const runtime of peersRef.current.values()) {
               runtime.dc?.close();
@@ -1025,6 +1069,7 @@ export function useWebRTC(
               msg.code === 'PASSWORD_REQUIRED' ||
               msg.code === 'INVALID_PASSWORD'
             ) {
+              closedByServer = true;
               onJoinErrorRef.current?.(msg.code, msg.message);
             } else {
               setError(`${msg.code}: ${msg.message}`);
@@ -1039,6 +1084,10 @@ export function useWebRTC(
 
     return () => {
       disposed = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       setIsHost(false);
       abortActiveTransfers();
       wsRef.current?.close();
@@ -1057,6 +1106,7 @@ export function useWebRTC(
     removePeerRuntime,
     roomId,
     sendSignaling,
+    syncPeersState,
   ]);
 
   useEffect(() => {
@@ -1247,7 +1297,7 @@ export function useWebRTC(
           const zipEntry = new ZipPassThrough(entryName);
           zip.add(zipEntry);
 
-          await new Promise<void>((resolve) => {
+          await new Promise<void>((resolve, reject) => {
             const transferId = crypto.randomUUID();
             const now = Date.now();
 
@@ -1271,9 +1321,12 @@ export function useWebRTC(
                 completedCount += 1;
                 resolve();
               },
-              onAbort: () => {
-                zipEntry.push(new Uint8Array(0), true);
-                resolve();
+              onAbort: (reason) => {
+                reject(
+                  new Error(
+                    reason ?? `Failed to transfer "${fileInfo.name}" for ZIP archive.`,
+                  ),
+                );
               },
             });
 
@@ -1405,6 +1458,7 @@ export function useWebRTC(
           },
           onComplete: () => {
             cleanupSignal();
+            removeTransfer(transferId);
             const blobParts = previewChunks.map(
               (c) =>
                 c.buffer.slice(
@@ -1420,6 +1474,7 @@ export function useWebRTC(
           },
           onAbort: (reason) => {
             cleanupSignal();
+            removeTransfer(transferId);
             reject(new Error(reason ?? 'Preview transfer cancelled.'));
           },
         });
@@ -1450,7 +1505,7 @@ export function useWebRTC(
         });
       });
     },
-    [cancelTransfer, sendControl],
+    [cancelTransfer, removeTransfer, sendControl],
   );
 
   const clearCompletedTransfers = useCallback(() => {
