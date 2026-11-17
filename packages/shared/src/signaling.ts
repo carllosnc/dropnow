@@ -64,12 +64,18 @@ export const ShutdownRoomMessageSchema = z.object({
   type: z.literal('shutdown-room'),
 });
 
+export const UpdateNameMessageSchema = z.object({
+  type: z.literal('update-name'),
+  displayName: DisplayNameSchema,
+});
+
 export const ClientSignalingMessageSchema = z.discriminatedUnion('type', [
   JoinMessageSchema,
   OfferMessageSchema,
   AnswerMessageSchema,
   IceCandidateMessageSchema,
   ShutdownRoomMessageSchema,
+  UpdateNameMessageSchema,
 ]);
 
 export type ClientSignalingMessage = z.infer<typeof ClientSignalingMessageSchema>;
@@ -90,6 +96,11 @@ export const PeerJoinedMessageSchema = z.object({
 export const PeerLeftMessageSchema = z.object({
   type: z.literal('peer-left'),
   peerId: PeerIdSchema,
+});
+
+export const PeerUpdatedMessageSchema = z.object({
+  type: z.literal('peer-updated'),
+  peer: PeerInfoSchema,
 });
 
 export const RelayedOfferMessageSchema = z.object({
@@ -125,6 +136,7 @@ export const ServerSignalingMessageSchema = z.discriminatedUnion('type', [
   RoomPeersMessageSchema,
   PeerJoinedMessageSchema,
   PeerLeftMessageSchema,
+  PeerUpdatedMessageSchema,
   RelayedOfferMessageSchema,
   RelayedAnswerMessageSchema,
   RelayedIceCandidateMessageSchema,
