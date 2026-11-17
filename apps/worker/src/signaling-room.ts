@@ -103,6 +103,21 @@ export class SignalingRoom extends DurableObject<Env> {
       return;
     }
 
+    if (payload.type === 'update-name') {
+      ws.serializeAttachment({
+        ...sender,
+        displayName: payload.displayName,
+      });
+      this.broadcast(
+        {
+          type: 'peer-updated',
+          peer: { peerId: sender.peerId, displayName: payload.displayName },
+        },
+        ws,
+      );
+      return;
+    }
+
     const targetSocket = this.findSocketByPeerId(payload.targetPeerId, ws);
     if (!targetSocket) {
       this.sendMessage(ws, {
@@ -263,6 +278,38 @@ export class SignalingRoom extends DurableObject<Env> {
     );
   }
 
+  private async closeAllPeers(
+    reason: string,
+    closeReason: string,
+    excludeWs?: WebSocket,
+  ): Promise<void> {
+    const closedPayload = JSON.stringify({
+      type: 'room-closed',
+      reason,
+    } satisfies ServerSignalingMessage);
+
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket === excludeWs) continue;
+      const hasAttachment = Boolean(this.getAttachment(socket));
+      socket.serializeAttachment(null);
+      if (hasAttachment) {
+        try {
+          socket.send(closedPayload);
+        } catch {
+          // Socket might be closing/closed
+        }
+      }
+      try {
+        socket.close(4000, closeReason);
+      } catch {
+        // Ignore close error
+      }
+    }
+
+    await this.ctx.storage.delete(PASSWORD_HASH_KEY);
+    await this.ctx.storage.delete(HOST_PEER_ID_KEY);
+  }
+
   private async handleShutdown(
     ws: WebSocket,
     senderPeerId: string,
@@ -277,30 +324,7 @@ export class SignalingRoom extends DurableObject<Env> {
       return;
     }
 
-    const closedPayload = JSON.stringify({
-      type: 'room-closed',
-      reason: 'The host closed this room.',
-    } satisfies ServerSignalingMessage);
-
-    for (const socket of this.ctx.getWebSockets()) {
-      const hasAttachment = Boolean(this.getAttachment(socket));
-      socket.serializeAttachment(null);
-      if (hasAttachment) {
-        try {
-          socket.send(closedPayload);
-        } catch {
-          // Socket might be closing/closed
-        }
-      }
-      try {
-        socket.close(4000, 'Room closed by host');
-      } catch {
-        // Ignore close error
-      }
-    }
-
-    await this.ctx.storage.delete(PASSWORD_HASH_KEY);
-    await this.ctx.storage.delete(HOST_PEER_ID_KEY);
+    await this.closeAllPeers('The host closed this room.', 'Room closed by host');
   }
 
   private async handleDisconnect(ws: WebSocket): Promise<void> {
@@ -309,6 +333,16 @@ export class SignalingRoom extends DurableObject<Env> {
 
     // Clear attachment so duplicate close/error events don't emit twice
     ws.serializeAttachment(null);
+
+    const hostPeerId = await this.ctx.storage.get<string>(HOST_PEER_ID_KEY);
+    if (hostPeerId === attachment.peerId) {
+      await this.closeAllPeers(
+        'The host left this room.',
+        'Host left the room',
+        ws,
+      );
+      return;
+    }
 
     this.broadcast(
       {
