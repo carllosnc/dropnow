@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Zip, ZipPassThrough } from 'fflate';
 import {
   DataChannelControlMessageSchema,
   ServerSignalingMessageSchema,
@@ -60,6 +61,7 @@ export interface TransferItem {
   peerId: string;
   peerName: string;
   direction: TransferDirection;
+  purpose?: 'download' | 'preview';
   name: string;
   size: number;
   mimeType: string;
@@ -97,6 +99,27 @@ interface IncomingTransferRuntime {
   writeQueue: Promise<void>;
   chunks: Uint8Array[];
   cancelled: boolean;
+  onChunk?: (chunk: Uint8Array) => void;
+  onComplete?: () => void;
+  onAbort?: (reason?: string) => void;
+}
+
+function makeUniqueZipName(name: string, used: Set<string>): string {
+  const sanitized = name.replace(/[/\\]/g, '_') || 'file';
+  if (!used.has(sanitized)) {
+    used.add(sanitized);
+    return sanitized;
+  }
+  const dotIdx = sanitized.lastIndexOf('.');
+  const stem = dotIdx > 0 ? sanitized.slice(0, dotIdx) : sanitized;
+  const ext = dotIdx > 0 ? sanitized.slice(dotIdx) : '';
+  let counter = 2;
+  while (used.has(`${stem} (${counter})${ext}`)) {
+    counter += 1;
+  }
+  const unique = `${stem} (${counter})${ext}`;
+  used.add(unique);
+  return unique;
 }
 
 function waitForBufferedAmountLow(
@@ -184,10 +207,12 @@ export function useWebRTC(
   const [peers, setPeers] = useState<PeerState[]>([]);
   const [sharedFiles, setSharedFiles] = useState<LocalSharedFile[]>([]);
   const [transfers, setTransfers] = useState<TransferItem[]>([]);
+  const [isZipping, setIsZipping] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const displayNameRef = useRef(displayName);
   displayNameRef.current = displayName;
+  const lastSentDisplayNameRef = useRef(displayName.trim() || 'Anonymous Peer');
   const roomPasswordRef = useRef(options?.roomPassword);
   roomPasswordRef.current = options?.roomPassword;
   const onPeerJoinedRef = useRef(options?.onPeerJoined);
@@ -207,6 +232,7 @@ export function useWebRTC(
   const sharedFilesRef = useRef<LocalSharedFile[]>([]);
   const outgoingRef = useRef<Map<string, OutgoingTransferRuntime>>(new Map());
   const incomingRef = useRef<Map<string, IncomingTransferRuntime>>(new Map());
+  const previewCacheRef = useRef<Map<string, Blob>>(new Map());
 
   const syncPeersState = useCallback(() => {
     const next: PeerState[] = [];
@@ -405,6 +431,12 @@ export function useWebRTC(
         case 'file-catalog': {
           if (peer) {
             const prevIds = new Set(peer.sharedFiles.map((f) => f.fileId));
+            const nextIds = new Set(msg.files.map((f) => f.fileId));
+            for (const prevId of prevIds) {
+              if (!nextIds.has(prevId)) {
+                previewCacheRef.current.delete(`${fromPeerId}:${prevId}`);
+              }
+            }
             const addedFiles = msg.files.filter((f) => !prevIds.has(f.fileId));
             peer.sharedFiles = msg.files;
             syncPeersState();
@@ -472,6 +504,7 @@ export function useWebRTC(
             incoming.cancelled = true;
             incomingRef.current.delete(msg.transferId);
             void incoming.writable?.abort().catch(() => {});
+            incoming.onAbort?.('Transfer cancelled by peer');
             updateTransfer(msg.transferId, { status: 'cancelled', speedBps: 0 });
           }
           break;
@@ -483,7 +516,9 @@ export function useWebRTC(
 
           void (async () => {
             try {
-              if (incoming.writable) {
+              if (incoming.onComplete) {
+                incoming.onComplete();
+              } else if (incoming.writable) {
                 await incoming.writeQueue;
                 if (incoming.cancelled) return;
                 await incoming.writable.close();
@@ -534,6 +569,7 @@ export function useWebRTC(
             incoming.cancelled = true;
             incomingRef.current.delete(msg.transferId);
             void incoming.writable?.abort().catch(() => {});
+            incoming.onAbort?.(msg.reason);
           }
           updateTransfer(msg.transferId, {
             status: 'error',
@@ -558,7 +594,11 @@ export function useWebRTC(
       const { payload } = decoded;
       incoming.bytesReceived += payload.byteLength;
 
-      if (incoming.writable) {
+      if (incoming.onChunk) {
+        const copy = new Uint8Array(payload.byteLength);
+        copy.set(payload);
+        incoming.onChunk(copy);
+      } else if (incoming.writable) {
         const writable = incoming.writable;
         const copy = new Uint8Array(payload.byteLength);
         copy.set(payload);
@@ -751,6 +791,7 @@ export function useWebRTC(
         incoming.cancelled = true;
         incomingRef.current.delete(transferId);
         void incoming.writable?.abort().catch(() => {});
+        incoming.onAbort?.(errorReason);
         if (errorReason) {
           updateTransfer(transferId, {
             status: 'error',
@@ -766,6 +807,11 @@ export function useWebRTC(
   const removePeerRuntime = useCallback(
     (peerId: string) => {
       abortActiveTransfers(peerId, 'Peer disconnected');
+      for (const key of previewCacheRef.current.keys()) {
+        if (key.startsWith(`${peerId}:`)) {
+          previewCacheRef.current.delete(key);
+        }
+      }
       const runtime = peersRef.current.get(peerId);
       if (runtime) {
         runtime.dc?.close();
@@ -784,6 +830,7 @@ export function useWebRTC(
       setError(null);
       setPeers([]);
       sharedFilesRef.current = [];
+      previewCacheRef.current.clear();
       setSharedFiles([]);
       setTransfers([]);
       return;
@@ -823,11 +870,13 @@ export function useWebRTC(
         }
         setWsStatus('connected');
         const password = roomPasswordRef.current;
+        const joinedName = displayNameRef.current.trim() || 'Anonymous Peer';
+        lastSentDisplayNameRef.current = joinedName;
         sendSignaling({
           type: 'join',
           roomId,
           peerId: localPeerId,
-          displayName: displayNameRef.current.trim() || 'Anonymous Peer',
+          displayName: joinedName,
           ...(password ? { password } : {}),
         });
       };
@@ -876,6 +925,24 @@ export function useWebRTC(
           }
           case 'peer-left': {
             removePeerRuntime(msg.peerId);
+            break;
+          }
+          case 'peer-updated': {
+            const runtime = peersRef.current.get(msg.peer.peerId);
+            if (runtime) {
+              runtime.info = {
+                ...runtime.info,
+                displayName: msg.peer.displayName,
+              };
+              syncPeersState();
+            }
+            setTransfers((prev) =>
+              prev.map((t) =>
+                t.peerId === msg.peer.peerId
+                  ? { ...t, peerName: msg.peer.displayName }
+                  : t,
+              ),
+            );
             break;
           }
           case 'offer': {
@@ -992,6 +1059,25 @@ export function useWebRTC(
     sendSignaling,
   ]);
 
+  useEffect(() => {
+    if (!roomId || wsStatus !== 'connected') return;
+    const trimmed = displayName.trim();
+    if (!trimmed || trimmed === lastSentDisplayNameRef.current) return;
+
+    const timer = window.setTimeout(() => {
+      if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+      lastSentDisplayNameRef.current = trimmed;
+      sendSignaling({
+        type: 'update-name',
+        displayName: trimmed,
+      });
+    }, 200);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [displayName, roomId, sendSignaling, wsStatus]);
+
   const downloadFile = useCallback(
     async (peerId: string, fileInfo: SharedFileInfo, useFilePicker = true) => {
       const peer = peersRef.current.get(peerId);
@@ -1079,6 +1165,7 @@ export function useWebRTC(
         incoming.cancelled = true;
         incomingRef.current.delete(transferId);
         void incoming.writable?.abort().catch(() => {});
+        incoming.onAbort?.('Transfer cancelled');
         sendControl(incoming.fromPeerId, {
           type: 'file-cancel',
           transferId,
@@ -1088,6 +1175,282 @@ export function useWebRTC(
       updateTransfer(transferId, { status: 'cancelled', speedBps: 0 });
     },
     [sendControl, updateTransfer],
+  );
+
+  const downloadFilesAsZip = useCallback(
+    async (
+      items: Array<{ peerId: string; fileInfo: SharedFileInfo }>,
+      zipFilename = `dropnow-${roomId ?? 'files'}.zip`,
+    ) => {
+      const readyItems = items.filter((item) => {
+        const peer = peersRef.current.get(item.peerId);
+        return peer?.dc?.readyState === 'open';
+      });
+      if (readyItems.length === 0) return;
+
+      let zipWritable: FileSystemWritableStreamLike | null = null;
+      if (supportsFileSystemAccess()) {
+        try {
+          const picker = (
+            window as unknown as { showSaveFilePicker: ShowSaveFilePickerFn }
+          ).showSaveFilePicker;
+          const handle = await picker({ suggestedName: zipFilename });
+          zipWritable = await handle.createWritable();
+        } catch (err) {
+          if (err instanceof DOMException && err.name === 'AbortError') {
+            return;
+          }
+          zipWritable = null;
+        }
+      }
+
+      setIsZipping(true);
+      const zipChunks: Uint8Array[] = [];
+      let writeQueue = Promise.resolve();
+      let resolveDone!: () => void;
+      let rejectDone!: (reason: unknown) => void;
+      const zipDone = new Promise<void>((resolve, reject) => {
+        resolveDone = resolve;
+        rejectDone = reject;
+      });
+
+      const zip = new Zip((err, data, final) => {
+        if (err) {
+          rejectDone(err);
+          return;
+        }
+        if (zipWritable) {
+          const copy = new Uint8Array(data.byteLength);
+          copy.set(data);
+          writeQueue = writeQueue.then(() => zipWritable!.write(copy));
+        } else {
+          const copy = new Uint8Array(data.byteLength);
+          copy.set(data);
+          zipChunks.push(copy);
+        }
+        if (final) {
+          resolveDone();
+        }
+      });
+
+      const usedNames = new Set<string>();
+      let completedCount = 0;
+
+      try {
+        for (const { peerId, fileInfo } of readyItems) {
+          const peer = peersRef.current.get(peerId);
+          if (!peer?.dc || peer.dc.readyState !== 'open') {
+            continue;
+          }
+
+          const entryName = makeUniqueZipName(fileInfo.name, usedNames);
+          const zipEntry = new ZipPassThrough(entryName);
+          zip.add(zipEntry);
+
+          await new Promise<void>((resolve) => {
+            const transferId = crypto.randomUUID();
+            const now = Date.now();
+
+            incomingRef.current.set(transferId, {
+              transferId,
+              fromPeerId: peerId,
+              fileInfo,
+              bytesReceived: 0,
+              startedAt: now,
+              lastTickAt: now,
+              lastTickBytes: 0,
+              writable: null,
+              writeQueue: Promise.resolve(),
+              chunks: [],
+              cancelled: false,
+              onChunk: (chunk) => {
+                zipEntry.push(chunk, false);
+              },
+              onComplete: () => {
+                zipEntry.push(new Uint8Array(0), true);
+                completedCount += 1;
+                resolve();
+              },
+              onAbort: () => {
+                zipEntry.push(new Uint8Array(0), true);
+                resolve();
+              },
+            });
+
+            setTransfers((prev) => [
+              {
+                transferId,
+                fileId: fileInfo.fileId,
+                peerId,
+                peerName: peer.info.displayName,
+                direction: 'incoming',
+                name: fileInfo.name,
+                size: fileInfo.size,
+                mimeType: fileInfo.mimeType,
+                bytesTransferred: 0,
+                speedBps: 0,
+                status: 'transferring',
+                startedAt: now,
+              },
+              ...prev,
+            ]);
+
+            sendControl(peerId, {
+              type: 'file-request',
+              transferId,
+              fileId: fileInfo.fileId,
+            });
+          });
+        }
+
+        if (completedCount === 0) {
+          await zipWritable?.abort().catch(() => {});
+          return;
+        }
+
+        zip.end();
+        await zipDone;
+
+        if (zipWritable) {
+          await writeQueue;
+          await zipWritable.close();
+        } else {
+          const blobParts = zipChunks.map(
+            (c) =>
+              c.buffer.slice(
+                c.byteOffset,
+                c.byteOffset + c.byteLength,
+              ) as ArrayBuffer,
+          );
+          const blob = new Blob(blobParts, { type: 'application/zip' });
+          const url = URL.createObjectURL(blob);
+          const anchor = document.createElement('a');
+          anchor.href = url;
+          anchor.download = zipFilename;
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 10_000);
+        }
+      } catch (err) {
+        await zipWritable?.abort().catch(() => {});
+        setError(
+          err instanceof Error ? err.message : 'Failed to create ZIP archive.',
+        );
+      } finally {
+        setIsZipping(false);
+      }
+    },
+    [roomId, sendControl],
+  );
+
+  const getLocalFile = useCallback((fileId: string): File | undefined => {
+    return sharedFilesRef.current.find((f) => f.fileId === fileId)?.file;
+  }, []);
+
+  const fetchFileForPreview = useCallback(
+    async (
+      peerId: string,
+      fileInfo: SharedFileInfo,
+      onProgress?: (bytesReceived: number, totalBytes: number) => void,
+      signal?: AbortSignal,
+    ): Promise<Blob> => {
+      if (signal?.aborted) {
+        throw new DOMException('Preview aborted', 'AbortError');
+      }
+
+      const cacheKey = `${peerId}:${fileInfo.fileId}`;
+      const cached = previewCacheRef.current.get(cacheKey);
+      if (cached) {
+        onProgress?.(fileInfo.size, fileInfo.size);
+        return cached;
+      }
+
+      const peer = peersRef.current.get(peerId);
+      if (!peer?.dc || peer.dc.readyState !== 'open') {
+        throw new Error('Peer DataChannel is not connected yet.');
+      }
+
+      return new Promise<Blob>((resolve, reject) => {
+        const transferId = crypto.randomUUID();
+        const now = Date.now();
+        const previewChunks: Uint8Array[] = [];
+        let received = 0;
+
+        const handleAbortSignal = () => {
+          cancelTransfer(transferId);
+        };
+        signal?.addEventListener('abort', handleAbortSignal, { once: true });
+
+        const cleanupSignal = () => {
+          signal?.removeEventListener('abort', handleAbortSignal);
+        };
+
+        incomingRef.current.set(transferId, {
+          transferId,
+          fromPeerId: peerId,
+          fileInfo,
+          bytesReceived: 0,
+          startedAt: now,
+          lastTickAt: now,
+          lastTickBytes: 0,
+          writable: null,
+          writeQueue: Promise.resolve(),
+          chunks: [],
+          cancelled: false,
+          onChunk: (chunk) => {
+            previewChunks.push(chunk);
+            received += chunk.byteLength;
+            onProgress?.(received, fileInfo.size);
+          },
+          onComplete: () => {
+            cleanupSignal();
+            const blobParts = previewChunks.map(
+              (c) =>
+                c.buffer.slice(
+                  c.byteOffset,
+                  c.byteOffset + c.byteLength,
+                ) as ArrayBuffer,
+            );
+            const blob = new Blob(blobParts, {
+              type: fileInfo.mimeType || 'application/octet-stream',
+            });
+            previewCacheRef.current.set(cacheKey, blob);
+            resolve(blob);
+          },
+          onAbort: (reason) => {
+            cleanupSignal();
+            reject(new Error(reason ?? 'Preview transfer cancelled.'));
+          },
+        });
+
+        setTransfers((prev) => [
+          {
+            transferId,
+            fileId: fileInfo.fileId,
+            peerId,
+            peerName: peer.info.displayName,
+            direction: 'incoming',
+            purpose: 'preview',
+            name: fileInfo.name,
+            size: fileInfo.size,
+            mimeType: fileInfo.mimeType,
+            bytesTransferred: 0,
+            speedBps: 0,
+            status: 'transferring',
+            startedAt: now,
+          },
+          ...prev,
+        ]);
+
+        sendControl(peerId, {
+          type: 'file-request',
+          transferId,
+          fileId: fileInfo.fileId,
+        });
+      });
+    },
+    [cancelTransfer, sendControl],
   );
 
   const clearCompletedTransfers = useCallback(() => {
@@ -1102,6 +1465,7 @@ export function useWebRTC(
     wsStatus,
     turnEnabled,
     isHost,
+    isZipping,
     peers,
     sharedFiles,
     transfers,
@@ -1109,6 +1473,9 @@ export function useWebRTC(
     addSharedFiles,
     removeSharedFile,
     downloadFile,
+    downloadFilesAsZip,
+    getLocalFile,
+    fetchFileForPreview,
     cancelTransfer,
     clearCompletedTransfers,
     shutdownRoom,
