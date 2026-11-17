@@ -6,8 +6,19 @@ import {
 } from '@dropnow/shared';
 import type { Env } from './env.js';
 
+const PASSWORD_HASH_KEY = 'roomPasswordHash';
+const HOST_PEER_ID_KEY = 'roomHostPeerId';
+
 interface SocketAttachment extends PeerInfo {
   roomId: string;
+}
+
+async function hashPassword(password: string): Promise<string> {
+  const bytes = new TextEncoder().encode(password);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (b) =>
+    b.toString(16).padStart(2, '0'),
+  ).join('');
 }
 
 export class SignalingRoom extends DurableObject<Env> {
@@ -67,7 +78,13 @@ export class SignalingRoom extends DurableObject<Env> {
     const payload = parsed.data;
 
     if (payload.type === 'join') {
-      this.handleJoin(ws, payload.roomId, payload.peerId, payload.displayName);
+      await this.handleJoin(
+        ws,
+        payload.roomId,
+        payload.peerId,
+        payload.displayName,
+        payload.password,
+      );
       return;
     }
 
@@ -78,6 +95,11 @@ export class SignalingRoom extends DurableObject<Env> {
         code: 'NOT_JOINED',
         message: 'You must send a join message before signaling.',
       });
+      return;
+    }
+
+    if (payload.type === 'shutdown-room') {
+      await this.handleShutdown(ws, sender.peerId);
       return;
     }
 
@@ -121,7 +143,7 @@ export class SignalingRoom extends DurableObject<Env> {
     code: number,
     reason: string,
   ): Promise<void> {
-    this.handleDisconnect(ws);
+    await this.handleDisconnect(ws);
     try {
       ws.close(code, reason);
     } catch {
@@ -130,7 +152,7 @@ export class SignalingRoom extends DurableObject<Env> {
   }
 
   override async webSocketError(ws: WebSocket): Promise<void> {
-    this.handleDisconnect(ws);
+    await this.handleDisconnect(ws);
     try {
       ws.close(1011, 'WebSocket error');
     } catch {
@@ -138,12 +160,13 @@ export class SignalingRoom extends DurableObject<Env> {
     }
   }
 
-  private handleJoin(
+  private async handleJoin(
     ws: WebSocket,
     roomId: string,
     peerId: string,
     displayName: string,
-  ): void {
+    password?: string,
+  ): Promise<void> {
     const existingPeers: PeerInfo[] = [];
 
     for (const socket of this.ctx.getWebSockets()) {
@@ -169,6 +192,56 @@ export class SignalingRoom extends DurableObject<Env> {
       });
     }
 
+    const normalizedPassword =
+      password && password.length > 0 ? password : undefined;
+    const storedHash = await this.ctx.storage.get<string>(PASSWORD_HASH_KEY);
+
+    if (existingPeers.length > 0 && storedHash) {
+      if (!normalizedPassword) {
+        this.sendMessage(ws, {
+          type: 'error',
+          code: 'PASSWORD_REQUIRED',
+          message: 'This room requires a password.',
+        });
+        try {
+          ws.close(4001, 'Password required');
+        } catch {
+          // Ignore close error
+        }
+        return;
+      }
+
+      const incomingHash = await hashPassword(normalizedPassword);
+      if (incomingHash !== storedHash) {
+        this.sendMessage(ws, {
+          type: 'error',
+          code: 'INVALID_PASSWORD',
+          message: 'Incorrect room password.',
+        });
+        try {
+          ws.close(4003, 'Invalid password');
+        } catch {
+          // Ignore close error
+        }
+        return;
+      }
+    } else if (existingPeers.length === 0) {
+      await this.ctx.storage.put(HOST_PEER_ID_KEY, peerId);
+      if (normalizedPassword) {
+        await this.ctx.storage.put(
+          PASSWORD_HASH_KEY,
+          await hashPassword(normalizedPassword),
+        );
+      } else {
+        await this.ctx.storage.delete(PASSWORD_HASH_KEY);
+      }
+    }
+
+    const hostPeerId =
+      existingPeers.length === 0
+        ? peerId
+        : await this.ctx.storage.get<string>(HOST_PEER_ID_KEY);
+
     const attachment: SocketAttachment = { roomId, peerId, displayName };
     ws.serializeAttachment(attachment);
 
@@ -177,6 +250,7 @@ export class SignalingRoom extends DurableObject<Env> {
       type: 'room-peers',
       roomId,
       peers: existingPeers,
+      isHost: hostPeerId === peerId,
     });
 
     // Broadcast arrival to all other peers in the room
@@ -189,7 +263,47 @@ export class SignalingRoom extends DurableObject<Env> {
     );
   }
 
-  private handleDisconnect(ws: WebSocket): void {
+  private async handleShutdown(
+    ws: WebSocket,
+    senderPeerId: string,
+  ): Promise<void> {
+    const hostPeerId = await this.ctx.storage.get<string>(HOST_PEER_ID_KEY);
+    if (hostPeerId !== senderPeerId) {
+      this.sendMessage(ws, {
+        type: 'error',
+        code: 'FORBIDDEN',
+        message: 'Only the room host can shut down the room.',
+      });
+      return;
+    }
+
+    const closedPayload = JSON.stringify({
+      type: 'room-closed',
+      reason: 'The host closed this room.',
+    } satisfies ServerSignalingMessage);
+
+    for (const socket of this.ctx.getWebSockets()) {
+      const hasAttachment = Boolean(this.getAttachment(socket));
+      socket.serializeAttachment(null);
+      if (hasAttachment) {
+        try {
+          socket.send(closedPayload);
+        } catch {
+          // Socket might be closing/closed
+        }
+      }
+      try {
+        socket.close(4000, 'Room closed by host');
+      } catch {
+        // Ignore close error
+      }
+    }
+
+    await this.ctx.storage.delete(PASSWORD_HASH_KEY);
+    await this.ctx.storage.delete(HOST_PEER_ID_KEY);
+  }
+
+  private async handleDisconnect(ws: WebSocket): Promise<void> {
     const attachment = this.getAttachment(ws);
     if (!attachment) return;
 
@@ -203,6 +317,21 @@ export class SignalingRoom extends DurableObject<Env> {
       },
       ws,
     );
+
+    if (!this.hasActivePeers(ws)) {
+      await this.ctx.storage.delete(PASSWORD_HASH_KEY);
+      await this.ctx.storage.delete(HOST_PEER_ID_KEY);
+    }
+  }
+
+  private hasActivePeers(excludeWs?: WebSocket): boolean {
+    for (const socket of this.ctx.getWebSockets()) {
+      if (socket === excludeWs) continue;
+      if (this.getAttachment(socket)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private getAttachment(ws: WebSocket): SocketAttachment | null {
