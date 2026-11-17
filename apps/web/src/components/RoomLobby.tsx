@@ -5,11 +5,15 @@ import {
   EyeOff,
   Hash,
   Lock,
+  LogIn,
+  PlusCircle,
   RefreshCw,
   ShieldCheck,
   User,
 } from 'lucide-react';
 import { Avatar } from './Avatar.js';
+
+type LobbyMode = 'create' | 'join';
 
 interface RoomLobbyProps {
   initialRoomId: string;
@@ -36,8 +40,14 @@ export function RoomLobby({
   onGenerateRoomId,
   onEnterRoom,
 }: RoomLobbyProps) {
+  const [mode, setMode] = useState<LobbyMode>(
+    hasInviteRoom ? 'join' : 'create',
+  );
   const [nameInput, setNameInput] = useState(displayName);
-  const [roomInput, setRoomInput] = useState(initialRoomId);
+  const [createRoomInput, setCreateRoomInput] = useState(initialRoomId);
+  const [joinRoomInput, setJoinRoomInput] = useState(
+    hasInviteRoom ? initialRoomId : '',
+  );
   const [passwordInput, setPasswordInput] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -48,8 +58,13 @@ export function RoomLobby({
   }, [displayName]);
 
   useEffect(() => {
-    setRoomInput(initialRoomId);
-  }, [initialRoomId]);
+    if (hasInviteRoom) {
+      setMode('join');
+      setJoinRoomInput(initialRoomId);
+    } else {
+      setCreateRoomInput(initialRoomId);
+    }
+  }, [hasInviteRoom, initialRoomId]);
 
   useEffect(() => {
     if (error) {
@@ -57,11 +72,19 @@ export function RoomLobby({
     }
   }, [error]);
 
+  const activeRoomInput = mode === 'create' ? createRoomInput : joinRoomInput;
   const activeError = validationError ?? error;
+
+  const handleModeChange = (nextMode: LobbyMode) => {
+    setMode(nextMode);
+    setPasswordInput('');
+    setShowPassword(false);
+    setValidationError(null);
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanedRoom = roomInput.trim();
+    const cleanedRoom = activeRoomInput.trim();
     const cleanedName = nameInput.trim();
 
     if (!cleanedName) {
@@ -71,7 +94,9 @@ export function RoomLobby({
 
     if (!ROOM_ID_REGEX.test(cleanedRoom)) {
       setValidationError(
-        'Room code must be 3-64 characters (letters, numbers, _ or -).',
+        mode === 'create'
+          ? 'Room code must be 3-64 characters (letters, numbers, _ or -).'
+          : 'Enter a valid room code (3-64 characters: letters, numbers, _ or -).',
       );
       return;
     }
@@ -83,6 +108,8 @@ export function RoomLobby({
       password: passwordInput.length > 0 ? passwordInput : undefined,
     });
   };
+
+  const isCreate = mode === 'create';
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-[#DEE9F9] px-4 py-8 text-[#111111]">
@@ -100,7 +127,55 @@ export function RoomLobby({
           </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+        {/* Mode Switcher */}
+        <div
+          role="tablist"
+          aria-label="Room mode"
+          className="mt-5 grid grid-cols-2 gap-1.5 rounded-2xl bg-[#EDF2F8] p-1"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={isCreate}
+            onClick={() => handleModeChange('create')}
+            className={`flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition ${
+              isCreate
+                ? 'bg-white text-[#111111]'
+                : 'text-zinc-500 hover:text-[#111111]'
+            }`}
+          >
+            <PlusCircle className="h-3.5 w-3.5" />
+            <span>Create Room</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!isCreate}
+            onClick={() => handleModeChange('join')}
+            className={`flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition ${
+              !isCreate
+                ? 'bg-white text-[#111111]'
+                : 'text-zinc-500 hover:text-[#111111]'
+            }`}
+          >
+            <LogIn className="h-3.5 w-3.5" />
+            <span>Join Room</span>
+          </button>
+        </div>
+
+        {/* Explicit Form Title */}
+        <div className="mt-5">
+          <h2 className="text-base font-bold tracking-tight text-[#111111]">
+            {isCreate ? 'Create a new room' : 'Join an existing room'}
+          </h2>
+          <p className="mt-0.5 text-xs text-zinc-500">
+            {isCreate
+              ? 'Start a private P2P room and share the code or invite link.'
+              : 'Enter the room code shared with you to connect.'}
+          </p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="mt-5 space-y-4">
           {/* Display Name */}
           <div>
             <label
@@ -151,14 +226,14 @@ export function RoomLobby({
               htmlFor="lobby-room-code"
               className="mb-1.5 flex items-center justify-between text-xs font-semibold text-zinc-700"
             >
-              <span>Room code</span>
-              {hasInviteRoom ? (
+              <span>{isCreate ? 'New room code' : 'Room code'}</span>
+              {!isCreate && hasInviteRoom ? (
                 <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600">
                   From invite link
                 </span>
               ) : (
                 <span className="font-normal text-zinc-400">
-                  Create or enter existing
+                  {isCreate ? 'Auto-generated or custom' : 'Required'}
                 </span>
               )}
             </label>
@@ -169,38 +244,48 @@ export function RoomLobby({
                   id="lobby-room-code"
                   type="text"
                   maxLength={64}
-                  value={roomInput}
+                  value={activeRoomInput}
                   onChange={(e) => {
-                    setRoomInput(e.target.value);
+                    if (isCreate) {
+                      setCreateRoomInput(e.target.value);
+                    } else {
+                      setJoinRoomInput(e.target.value);
+                    }
                     if (validationError) setValidationError(null);
                   }}
-                  placeholder="e.g. team-sync"
+                  placeholder={
+                    isCreate ? 'e.g. team-sync' : 'Enter room code'
+                  }
                   className="w-full rounded-xl border border-black/[0.1] bg-[#EDF2F8] py-2.5 pr-3 pl-9 font-mono text-sm font-medium text-[#111111] outline-none transition focus:border-blue-600/50 focus:bg-white"
                 />
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setRoomInput(onGenerateRoomId());
-                  if (validationError) setValidationError(null);
-                }}
-                className="group rounded-xl border border-black/[0.1] bg-[#EDF2F8] p-2.5 text-zinc-600 transition hover:bg-[#E2E9F4] hover:text-[#111111] active:scale-95"
-                title="Generate new room code"
-                aria-label="Generate new room code"
-              >
-                <RefreshCw className="h-4 w-4 transition-transform duration-300 group-hover:rotate-180 motion-reduce:transition-none" />
-              </button>
+              {isCreate && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCreateRoomInput(onGenerateRoomId());
+                    if (validationError) setValidationError(null);
+                  }}
+                  className="group rounded-xl border border-black/[0.1] bg-[#EDF2F8] p-2.5 text-zinc-600 transition hover:bg-[#E2E9F4] hover:text-[#111111] active:scale-95"
+                  title="Generate new room code"
+                  aria-label="Generate new room code"
+                >
+                  <RefreshCw className="h-4 w-4 transition-transform duration-300 group-hover:rotate-180 motion-reduce:transition-none" />
+                </button>
+              )}
             </div>
           </div>
 
-          {/* Room Password (Optional) */}
+          {/* Room Password */}
           <div>
             <label
               htmlFor="lobby-room-password"
               className="mb-1.5 flex items-center justify-between text-xs font-semibold text-zinc-700"
             >
-              <span>Room password</span>
-              <span className="font-normal text-zinc-400">Optional</span>
+              <span>{isCreate ? 'Set room password' : 'Room password'}</span>
+              <span className="font-normal text-zinc-400">
+                {isCreate ? 'Optional' : 'If required'}
+              </span>
             </label>
             <div className="relative">
               <Lock className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-zinc-400" />
@@ -215,9 +300,9 @@ export function RoomLobby({
                   if (validationError) setValidationError(null);
                 }}
                 placeholder={
-                  error
-                    ? 'Enter room password'
-                    : 'Leave empty for an open room'
+                  isCreate
+                    ? 'Leave empty for an open room'
+                    : 'Enter password if room is locked'
                 }
                 className="w-full rounded-xl border border-black/[0.1] bg-[#EDF2F8] py-2.5 pr-10 pl-9 text-sm font-medium text-[#111111] outline-none transition focus:border-blue-600/50 focus:bg-white"
               />
@@ -249,7 +334,7 @@ export function RoomLobby({
             type="submit"
             className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 active:scale-[0.99]"
           >
-            <span>{hasInviteRoom ? 'Join room' : 'Enter room'}</span>
+            <span>{isCreate ? 'Create room' : 'Join room'}</span>
             <ArrowRight className="h-4 w-4" />
           </button>
         </form>
