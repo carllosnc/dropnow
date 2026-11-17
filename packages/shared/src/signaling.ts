@@ -39,6 +39,7 @@ export const JoinMessageSchema = z.object({
   roomId: RoomIdSchema,
   peerId: PeerIdSchema,
   displayName: DisplayNameSchema,
+  password: z.string().max(128).optional(),
 });
 
 export const OfferMessageSchema = z.object({
@@ -59,11 +60,16 @@ export const IceCandidateMessageSchema = z.object({
   candidate: IceCandidatePayloadSchema,
 });
 
+export const ShutdownRoomMessageSchema = z.object({
+  type: z.literal('shutdown-room'),
+});
+
 export const ClientSignalingMessageSchema = z.discriminatedUnion('type', [
   JoinMessageSchema,
   OfferMessageSchema,
   AnswerMessageSchema,
   IceCandidateMessageSchema,
+  ShutdownRoomMessageSchema,
 ]);
 
 export type ClientSignalingMessage = z.infer<typeof ClientSignalingMessageSchema>;
@@ -73,6 +79,7 @@ export const RoomPeersMessageSchema = z.object({
   type: z.literal('room-peers'),
   roomId: RoomIdSchema,
   peers: z.array(PeerInfoSchema),
+  isHost: z.boolean().optional(),
 });
 
 export const PeerJoinedMessageSchema = z.object({
@@ -109,6 +116,11 @@ export const SignalingErrorMessageSchema = z.object({
   message: z.string(),
 });
 
+export const RoomClosedMessageSchema = z.object({
+  type: z.literal('room-closed'),
+  reason: z.string(),
+});
+
 export const ServerSignalingMessageSchema = z.discriminatedUnion('type', [
   RoomPeersMessageSchema,
   PeerJoinedMessageSchema,
@@ -117,6 +129,7 @@ export const ServerSignalingMessageSchema = z.discriminatedUnion('type', [
   RelayedAnswerMessageSchema,
   RelayedIceCandidateMessageSchema,
   SignalingErrorMessageSchema,
+  RoomClosedMessageSchema,
 ]);
 
 export type ServerSignalingMessage = z.infer<typeof ServerSignalingMessageSchema>;
