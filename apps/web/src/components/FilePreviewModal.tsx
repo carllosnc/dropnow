@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Check,
   ChevronLeft,
@@ -69,8 +69,14 @@ export function FilePreviewModal({
   const [error, setError] = useState<string | null>(null);
   const [copiedText, setCopiedText] = useState(false);
 
+  const entryKey = entry
+    ? `${entry.kind}:${entry.ownerId}:${entry.file.fileId}:${entry.isPeerReady ? '1' : '0'}`
+    : null;
+  const entryRef = useRef(entry);
+  entryRef.current = entry;
+
   useEffect(() => {
-    if (!entry) return;
+    if (!entryKey) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
       else if (e.key === 'ArrowLeft' && hasPrev) onPrev();
@@ -78,10 +84,11 @@ export function FilePreviewModal({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [entry, hasNext, hasPrev, onClose, onNext, onPrev]);
+  }, [entryKey, hasNext, hasPrev, onClose, onNext, onPrev]);
 
   useEffect(() => {
-    if (!entry) {
+    const activeEntry = entryRef.current;
+    if (!activeEntry || !entryKey) {
       setBlob(null);
       setObjectUrl(null);
       setTextContent(null);
@@ -101,11 +108,11 @@ export function FilePreviewModal({
     setProgress(null);
     setCopiedText(false);
 
-    const kind = getPreviewKind(entry.file.name, entry.file.mimeType);
+    const kind = getPreviewKind(activeEntry.file.name, activeEntry.file.mimeType);
     const canPreview = isPreviewWithinLimit(
-      entry.file.name,
-      entry.file.mimeType,
-      entry.file.size,
+      activeEntry.file.name,
+      activeEntry.file.mimeType,
+      activeEntry.file.size,
     );
 
     if (kind === 'unsupported' || !canPreview) {
@@ -117,19 +124,19 @@ export function FilePreviewModal({
       setLoading(true);
       try {
         let resolvedBlob: Blob;
-        if (entry.kind === 'local') {
-          const localFile = getLocalFile(entry.file.fileId);
+        if (activeEntry.kind === 'local') {
+          const localFile = getLocalFile(activeEntry.file.fileId);
           if (!localFile) {
             throw new Error('Local file is no longer available.');
           }
           resolvedBlob = localFile;
         } else {
-          if (!entry.isPeerReady) {
+          if (!activeEntry.isPeerReady) {
             throw new Error('Peer DataChannel is not connected yet.');
           }
           resolvedBlob = await fetchRemotePreview(
-            entry.ownerId,
-            entry.file,
+            activeEntry.ownerId,
+            activeEntry.file,
             (received, total) => {
               if (!controller.signal.aborted) {
                 setProgress({ received, total });
@@ -172,7 +179,7 @@ export function FilePreviewModal({
         URL.revokeObjectURL(createdUrl);
       }
     };
-  }, [entry, fetchRemotePreview, getLocalFile]);
+  }, [entryKey, fetchRemotePreview, getLocalFile]);
 
   if (!entry) return null;
 
