@@ -159,24 +159,28 @@ function toSharedFileInfo(entry: LocalSharedFile): SharedFileInfo {
 }
 
 export interface UseWebRTCOptions {
+  roomPassword?: string;
   onPeerJoined?: (peer: { peerId: string; displayName: string }) => void;
   onPeerFilesAdded?: (peer: {
     peerId: string;
     displayName: string;
     files: SharedFileInfo[];
   }) => void;
+  onJoinError?: (code: string, message: string) => void;
+  onRoomClosed?: (reason: string) => void;
 }
 
 export function useWebRTC(
-  roomId: string,
+  roomId: string | null,
   displayName: string,
   localPeerId: string,
   options?: UseWebRTCOptions,
 ) {
   const [wsStatus, setWsStatus] = useState<
     'connecting' | 'connected' | 'disconnected' | 'error'
-  >('connecting');
+  >(roomId ? 'connecting' : 'disconnected');
   const [turnEnabled, setTurnEnabled] = useState<boolean | null>(null);
+  const [isHost, setIsHost] = useState(false);
   const [peers, setPeers] = useState<PeerState[]>([]);
   const [sharedFiles, setSharedFiles] = useState<LocalSharedFile[]>([]);
   const [transfers, setTransfers] = useState<TransferItem[]>([]);
@@ -184,10 +188,16 @@ export function useWebRTC(
 
   const displayNameRef = useRef(displayName);
   displayNameRef.current = displayName;
+  const roomPasswordRef = useRef(options?.roomPassword);
+  roomPasswordRef.current = options?.roomPassword;
   const onPeerJoinedRef = useRef(options?.onPeerJoined);
   onPeerJoinedRef.current = options?.onPeerJoined;
   const onPeerFilesAddedRef = useRef(options?.onPeerFilesAdded);
   onPeerFilesAddedRef.current = options?.onPeerFilesAdded;
+  const onJoinErrorRef = useRef(options?.onJoinError);
+  onJoinErrorRef.current = options?.onJoinError;
+  const onRoomClosedRef = useRef(options?.onRoomClosed);
+  onRoomClosedRef.current = options?.onRoomClosed;
 
   const wsRef = useRef<WebSocket | null>(null);
   const iceServersRef = useRef<IceServerConfig[]>([
@@ -768,6 +778,17 @@ export function useWebRTC(
   );
 
   useEffect(() => {
+    if (!roomId) {
+      setWsStatus('disconnected');
+      setIsHost(false);
+      setError(null);
+      setPeers([]);
+      sharedFilesRef.current = [];
+      setSharedFiles([]);
+      setTransfers([]);
+      return;
+    }
+
     let disposed = false;
 
     const connect = async () => {
@@ -801,11 +822,13 @@ export function useWebRTC(
           return;
         }
         setWsStatus('connected');
+        const password = roomPasswordRef.current;
         sendSignaling({
           type: 'join',
           roomId,
           peerId: localPeerId,
           displayName: displayNameRef.current.trim() || 'Anonymous Peer',
+          ...(password ? { password } : {}),
         });
       };
 
@@ -838,6 +861,7 @@ export function useWebRTC(
         const msg = parsed.data;
         switch (msg.type) {
           case 'room-peers': {
+            setIsHost(Boolean(msg.isHost));
             for (const peer of msg.peers) {
               const isInitiator = localPeerId.localeCompare(peer.peerId) < 0;
               createPeerRuntime(peer, isInitiator);
@@ -915,8 +939,29 @@ export function useWebRTC(
             }
             break;
           }
+          case 'room-closed': {
+            abortActiveTransfers();
+            for (const runtime of peersRef.current.values()) {
+              runtime.dc?.close();
+              runtime.pc.close();
+            }
+            peersRef.current.clear();
+            setPeers([]);
+            setIsHost(false);
+            wsRef.current?.close();
+            wsRef.current = null;
+            onRoomClosedRef.current?.(msg.reason);
+            break;
+          }
           case 'error': {
-            setError(`${msg.code}: ${msg.message}`);
+            if (
+              msg.code === 'PASSWORD_REQUIRED' ||
+              msg.code === 'INVALID_PASSWORD'
+            ) {
+              onJoinErrorRef.current?.(msg.code, msg.message);
+            } else {
+              setError(`${msg.code}: ${msg.message}`);
+            }
             break;
           }
         }
@@ -927,6 +972,7 @@ export function useWebRTC(
 
     return () => {
       disposed = true;
+      setIsHost(false);
       abortActiveTransfers();
       wsRef.current?.close();
       wsRef.current = null;
@@ -1048,9 +1094,14 @@ export function useWebRTC(
     setTransfers((prev) => prev.filter((t) => t.status === 'transferring'));
   }, []);
 
+  const shutdownRoom = useCallback(() => {
+    sendSignaling({ type: 'shutdown-room' });
+  }, [sendSignaling]);
+
   return {
     wsStatus,
     turnEnabled,
+    isHost,
     peers,
     sharedFiles,
     transfers,
@@ -1060,5 +1111,6 @@ export function useWebRTC(
     downloadFile,
     cancelTransfer,
     clearCompletedTransfers,
+    shutdownRoom,
   };
 }
