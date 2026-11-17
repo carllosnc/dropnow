@@ -183,6 +183,7 @@ export class SignalingRoom extends DurableObject<Env> {
     password?: string,
   ): Promise<void> {
     const existingPeers: PeerInfo[] = [];
+    let replacedSelf = false;
 
     for (const socket of this.ctx.getWebSockets()) {
       if (socket === ws) continue;
@@ -190,6 +191,7 @@ export class SignalingRoom extends DurableObject<Env> {
       if (!attachment) continue;
 
       if (attachment.peerId === peerId) {
+        replacedSelf = true;
         // Evict stale socket with the same peerId (e.g. quick page reload)
         // Clear attachment first so webSocketClose doesn't broadcast a spurious peer-left
         socket.serializeAttachment(null);
@@ -211,7 +213,7 @@ export class SignalingRoom extends DurableObject<Env> {
       password && password.length > 0 ? password : undefined;
     const storedHash = await this.ctx.storage.get<string>(PASSWORD_HASH_KEY);
 
-    if (existingPeers.length > 0 && storedHash) {
+    if ((existingPeers.length > 0 || replacedSelf) && storedHash) {
       if (!normalizedPassword) {
         this.sendMessage(ws, {
           type: 'error',
@@ -240,7 +242,7 @@ export class SignalingRoom extends DurableObject<Env> {
         }
         return;
       }
-    } else if (existingPeers.length === 0) {
+    } else if (existingPeers.length === 0 && !replacedSelf) {
       await this.ctx.storage.put(HOST_PEER_ID_KEY, peerId);
       if (normalizedPassword) {
         await this.ctx.storage.put(
@@ -253,7 +255,7 @@ export class SignalingRoom extends DurableObject<Env> {
     }
 
     const hostPeerId =
-      existingPeers.length === 0
+      existingPeers.length === 0 && !replacedSelf
         ? peerId
         : await this.ctx.storage.get<string>(HOST_PEER_ID_KEY);
 
