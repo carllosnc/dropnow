@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FileFeed, type FeedEntry } from './components/FileFeed.js';
+import { FilePreviewModal } from './components/FilePreviewModal.js';
 import { RoomLobby } from './components/RoomLobby.js';
 import { Sidebar } from './components/Sidebar.js';
 import { ToastContainer, type ToastItem } from './components/Toast.js';
@@ -42,6 +43,7 @@ export function App() {
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'me' | string>(
     'all',
   );
+  const [previewEntryKey, setPreviewEntryKey] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastTimersRef = useRef<Map<string, number>>(new Map());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -148,6 +150,7 @@ export function App() {
     wsStatus,
     turnEnabled,
     isHost,
+    isZipping,
     peers,
     sharedFiles,
     transfers,
@@ -155,6 +158,9 @@ export function App() {
     addSharedFiles,
     removeSharedFile,
     downloadFile,
+    downloadFilesAsZip,
+    getLocalFile,
+    fetchFileForPreview,
     cancelTransfer,
     shutdownRoom,
   } = useWebRTC(activeRoom?.roomId ?? null, displayName, localPeerId, {
@@ -208,6 +214,15 @@ export function App() {
     list.sort((a, b) => a.file.sharedAt - b.file.sharedAt);
     return list;
   }, [selectedFilter, sharedFiles, displayName, peers]);
+
+  const getEntryKey = (entry: FeedEntry) =>
+    `${entry.kind}:${entry.ownerId}:${entry.file.fileId}`;
+
+  const previewIndex = previewEntryKey
+    ? entries.findIndex((entry) => getEntryKey(entry) === previewEntryKey)
+    : -1;
+  const previewEntry =
+    previewIndex >= 0 ? (entries[previewIndex] ?? null) : null;
 
   const handleCopyInvite = async () => {
     try {
@@ -316,15 +331,38 @@ export function App() {
             <FileFeed
               entries={entries}
               transfers={transfers}
+              isZipping={isZipping}
               onPickFiles={() => fileInputRef.current?.click()}
               onAddFiles={handleAddSharedFiles}
               onRemoveLocalFile={removeSharedFile}
               onDownloadFile={downloadFile}
+              onDownloadAll={(items) => void downloadFilesAsZip(items)}
+              onPreviewEntry={(entry) => setPreviewEntryKey(getEntryKey(entry))}
               onCancelTransfer={cancelTransfer}
             />
           </main>
         </div>
       </div>
+
+      <FilePreviewModal
+        entry={previewEntry}
+        hasPrev={previewIndex > 0}
+        hasNext={previewIndex >= 0 && previewIndex < entries.length - 1}
+        onPrev={() => {
+          const prev = entries[previewIndex - 1];
+          if (prev) setPreviewEntryKey(getEntryKey(prev));
+        }}
+        onNext={() => {
+          const next = entries[previewIndex + 1];
+          if (next) setPreviewEntryKey(getEntryKey(next));
+        }}
+        onClose={() => setPreviewEntryKey(null)}
+        getLocalFile={getLocalFile}
+        fetchRemotePreview={fetchFileForPreview}
+        onDownloadFile={(peerId, fileInfo) =>
+          void downloadFile(peerId, fileInfo, true)
+        }
+      />
 
       {/* Hidden File Input */}
       <input
