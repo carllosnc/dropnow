@@ -1,24 +1,30 @@
 import { useEffect, useState } from 'react';
-import { Check, Copy, Hash, RefreshCw } from 'lucide-react';
+import { Check, Copy, Hash, Lock, LogOut, Power } from 'lucide-react';
 
 interface TopBarProps {
   roomId: string;
+  hasPassword?: boolean;
+  isHost?: boolean;
   fileCount: number;
   wsStatus: 'connecting' | 'connected' | 'disconnected' | 'error';
   turnEnabled: boolean | null;
   onSwitchRoom: (roomId: string) => void;
-  onNewRoom: () => void;
   onCopyInvite: () => Promise<void>;
+  onLeaveRoom: () => void;
+  onShutdownRoom?: () => void;
 }
 
 export function TopBar({
   roomId,
+  hasPassword = false,
+  isHost = false,
   fileCount,
   wsStatus,
   turnEnabled,
   onSwitchRoom,
-  onNewRoom,
   onCopyInvite,
+  onLeaveRoom,
+  onShutdownRoom,
 }: TopBarProps) {
   const [roomInput, setRoomInput] = useState(roomId);
   const [copied, setCopied] = useState(false);
@@ -36,7 +42,12 @@ export function TopBar({
   return (
     <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-white px-4 py-3">
       <div className="flex items-center gap-3">
-        <div className="group flex items-center gap-2.5">
+        <button
+          type="button"
+          onClick={onLeaveRoom}
+          className="group flex items-center gap-2.5 text-left"
+          title="Back to room setup"
+        >
           <img
             src="/logo.png"
             alt="DropNow logo"
@@ -45,13 +56,39 @@ export function TopBar({
           <h1 className="text-base font-bold tracking-tight text-[#111111]">
             DropNow
           </h1>
-        </div>
+        </button>
 
         <span className="text-zinc-300">/</span>
 
         <span className="font-mono text-xs text-zinc-500 tabular-nums">
           {fileCount} {fileCount === 1 ? 'file' : 'files'}
         </span>
+
+        <span className="hidden text-zinc-300 sm:inline">·</span>
+
+        <div
+          className="hidden items-center gap-1.5 text-xs font-medium text-zinc-600 sm:flex"
+          title={`Signaling: ${wsStatus} · ${turnEnabled ? 'TURN Relay' : 'STUN Direct'}`}
+        >
+          <span
+            className={`h-2 w-2 rounded-full ${
+              wsStatus === 'connected'
+                ? 'bg-emerald-500'
+                : wsStatus === 'connecting'
+                  ? 'bg-amber-500'
+                  : 'bg-rose-500'
+            }`}
+          />
+          <span>{wsStatus === 'connected' ? 'Live' : wsStatus}</span>
+          {turnEnabled !== null && (
+            <>
+              <span className="text-zinc-300">·</span>
+              <span className="font-mono text-[11px] text-zinc-400">
+                {turnEnabled ? 'TURN' : 'STUN'}
+              </span>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -68,9 +105,17 @@ export function TopBar({
               type="text"
               value={roomInput}
               onChange={(e) => setRoomInput(e.target.value)}
-              className="w-28 rounded-xl border border-black/[0.12] bg-[#EDF2F8] py-1.5 pr-2.5 pl-6.5 font-mono text-xs font-medium text-[#111111] outline-none transition focus:border-[#111111]/40 focus:bg-white sm:w-32"
+              className={`w-28 rounded-xl border border-black/[0.12] bg-[#EDF2F8] py-1.5 pl-6.5 font-mono text-xs font-medium text-[#111111] outline-none transition focus:border-[#111111]/40 focus:bg-white sm:w-32 ${
+                hasPassword ? 'pr-7' : 'pr-2.5'
+              }`}
               aria-label="Room code"
             />
+            {hasPassword && (
+              <Lock
+                className="pointer-events-none absolute top-1/2 right-2.5 h-3 w-3 -translate-y-1/2 text-blue-600"
+                aria-label="Password protected"
+              />
+            )}
           </div>
           {roomInput !== roomId && (
             <button
@@ -96,41 +141,29 @@ export function TopBar({
           <span>{copied ? 'Copied' : 'Invite'}</span>
         </button>
 
-        <button
-          type="button"
-          onClick={onNewRoom}
-          className="group/btn rounded-xl border border-black/[0.12] bg-[#EDF2F8] p-2 text-zinc-700 transition hover:border-black/[0.18] hover:bg-[#E2E9F4] hover:text-[#111111] active:scale-95"
-          title="Create new random room"
-          aria-label="Create new random room"
-        >
-          <RefreshCw className="h-3.5 w-3.5 transition-transform duration-300 ease-out group-hover/btn:rotate-180 motion-reduce:transition-none" />
-        </button>
-
-        <div className="mx-1 hidden h-4 w-px bg-zinc-200 sm:block" />
-
-        <div
-          className="flex items-center gap-1.5 px-1 text-xs font-medium text-zinc-600"
-          title={`Signaling: ${wsStatus} · ${turnEnabled ? 'TURN Relay' : 'STUN Direct'}`}
-        >
-          <span
-            className={`h-2 w-2 rounded-full ${
-              wsStatus === 'connected'
-                ? 'bg-emerald-500'
-                : wsStatus === 'connecting'
-                  ? 'bg-amber-500'
-                  : 'bg-rose-500'
-            }`}
-          />
-          <span>{wsStatus === 'connected' ? 'Live' : wsStatus}</span>
-          {turnEnabled !== null && (
-            <>
-              <span className="text-zinc-300">·</span>
-              <span className="font-mono text-[11px] text-zinc-400">
-                {turnEnabled ? 'TURN' : 'STUN'}
-              </span>
-            </>
-          )}
-        </div>
+        {isHost && onShutdownRoom ? (
+          <button
+            type="button"
+            onClick={onShutdownRoom}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-rose-500/20 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 transition hover:border-rose-500/30 hover:bg-rose-100 active:scale-95"
+            title="Shut down room and disconnect everyone"
+            aria-label="Shut down room"
+          >
+            <Power className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Shutdown</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={onLeaveRoom}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-black/[0.12] bg-[#EDF2F8] px-3 py-1.5 text-xs font-semibold text-[#111111] transition hover:border-black/[0.18] hover:bg-[#E2E9F4] active:scale-95"
+            title="Leave room"
+            aria-label="Leave room"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Leave</span>
+          </button>
+        )}
       </div>
     </header>
   );
