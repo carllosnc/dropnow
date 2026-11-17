@@ -40,10 +40,10 @@ describe('format helpers', () => {
 
   it('builds encoded DiceBear avatar URLs', () => {
     expect(getAvatarUrl('Amber Falcon')).toBe(
-      'https://api.dicebear.com/9.x/thumbs/svg?seed=Amber%20Falcon',
+      'https://api.dicebear.com/10.x/marbles/svg?seed=Amber%20Falcon',
     );
     expect(getAvatarUrl('   ')).toBe(
-      'https://api.dicebear.com/9.x/thumbs/svg?seed=dropnow',
+      'https://api.dicebear.com/10.x/marbles/svg?seed=dropnow',
     );
   });
 });
