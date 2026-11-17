@@ -3,8 +3,6 @@
 [![CI](https://github.com/carllosnc/dropnow/actions/workflows/ci.yml/badge.svg)](https://github.com/carllosnc/dropnow/actions/workflows/ci.yml)
 [![Live Demo](https://img.shields.io/badge/demo-live-2563EB?style=flat&logo=cloudflareworkers&logoColor=white)](https://dropnow.carllos-nc.workers.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-111111?style=flat)](LICENSE)
-[![Bun](https://img.shields.io/badge/bun-workspace-FBF0DF?style=flat&logo=bun&logoColor=111111)](https://bun.sh/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![WebRTC](https://img.shields.io/badge/WebRTC-DataChannel-333333?style=flat&logo=webrtc&logoColor=white)](https://webrtc.org/)
 
 Real-time peer-to-peer browser file transfer with zero server-side file storage.
