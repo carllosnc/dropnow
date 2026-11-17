@@ -61,7 +61,7 @@ export interface TransferItem {
   peerId: string;
   peerName: string;
   direction: TransferDirection;
-  purpose?: 'download' | 'preview';
+  purpose?: 'download' | 'preview' | 'zip';
   name: string;
   size: number;
   mimeType: string;
@@ -513,13 +513,13 @@ export function useWebRTC(
         }
         case 'file-cancel': {
           const outgoing = outgoingRef.current.get(msg.transferId);
-          if (outgoing) {
+          if (outgoing && outgoing.targetPeerId === fromPeerId) {
             outgoing.cancelled = true;
             outgoingRef.current.delete(msg.transferId);
             updateTransfer(msg.transferId, { status: 'cancelled', speedBps: 0 });
           }
           const incoming = incomingRef.current.get(msg.transferId);
-          if (incoming) {
+          if (incoming && incoming.fromPeerId === fromPeerId) {
             incoming.cancelled = true;
             incomingRef.current.delete(msg.transferId);
             void incoming.writable?.abort().catch(() => {});
@@ -530,7 +530,7 @@ export function useWebRTC(
         }
         case 'file-complete': {
           const incoming = incomingRef.current.get(msg.transferId);
-          if (!incoming) break;
+          if (!incoming || incoming.fromPeerId !== fromPeerId) break;
           incomingRef.current.delete(msg.transferId);
 
           void (async () => {
@@ -578,23 +578,28 @@ export function useWebRTC(
           break;
         }
         case 'transfer-error': {
+          let matched = false;
           const outgoing = outgoingRef.current.get(msg.transferId);
-          if (outgoing) {
+          if (outgoing && outgoing.targetPeerId === fromPeerId) {
             outgoing.cancelled = true;
             outgoingRef.current.delete(msg.transferId);
+            matched = true;
           }
           const incoming = incomingRef.current.get(msg.transferId);
-          if (incoming) {
+          if (incoming && incoming.fromPeerId === fromPeerId) {
             incoming.cancelled = true;
             incomingRef.current.delete(msg.transferId);
             void incoming.writable?.abort().catch(() => {});
             incoming.onAbort?.(msg.reason);
+            matched = true;
           }
-          updateTransfer(msg.transferId, {
-            status: 'error',
-            error: msg.reason,
-            speedBps: 0,
-          });
+          if (matched) {
+            updateTransfer(msg.transferId, {
+              status: 'error',
+              error: msg.reason,
+              speedBps: 0,
+            });
+          }
           break;
         }
       }
@@ -1097,7 +1102,11 @@ export function useWebRTC(
         runtime.pc.close();
       }
       peersRef.current.clear();
+      sharedFilesRef.current = [];
+      previewCacheRef.current.clear();
       setPeers([]);
+      setSharedFiles([]);
+      setTransfers([]);
     };
   }, [
     abortActiveTransfers,
@@ -1257,6 +1266,7 @@ export function useWebRTC(
       setIsZipping(true);
       const zipChunks: Uint8Array[] = [];
       let writeQueue = Promise.resolve();
+      let writeError: unknown = null;
       let resolveDone!: () => void;
       let rejectDone!: (reason: unknown) => void;
       const zipDone = new Promise<void>((resolve, reject) => {
@@ -1272,7 +1282,16 @@ export function useWebRTC(
         if (zipWritable) {
           const copy = new Uint8Array(data.byteLength);
           copy.set(data);
-          writeQueue = writeQueue.then(() => zipWritable!.write(copy));
+          writeQueue = writeQueue
+            .then(() => {
+              if (writeError) return;
+              return zipWritable!.write(copy);
+            })
+            .catch((writeErr) => {
+              if (!writeError) {
+                writeError = writeErr;
+              }
+            });
         } else {
           const copy = new Uint8Array(data.byteLength);
           copy.set(data);
@@ -1288,6 +1307,9 @@ export function useWebRTC(
 
       try {
         for (const { peerId, fileInfo } of readyItems) {
+          if (writeError) {
+            throw writeError;
+          }
           const peer = peersRef.current.get(peerId);
           if (!peer?.dc || peer.dc.readyState !== 'open') {
             continue;
@@ -1337,6 +1359,7 @@ export function useWebRTC(
                 peerId,
                 peerName: peer.info.displayName,
                 direction: 'incoming',
+                purpose: 'zip',
                 name: fileInfo.name,
                 size: fileInfo.size,
                 mimeType: fileInfo.mimeType,
@@ -1356,6 +1379,10 @@ export function useWebRTC(
           });
         }
 
+        if (writeError) {
+          throw writeError;
+        }
+
         if (completedCount === 0) {
           await zipWritable?.abort().catch(() => {});
           return;
@@ -1366,6 +1393,9 @@ export function useWebRTC(
 
         if (zipWritable) {
           await writeQueue;
+          if (writeError) {
+            throw writeError;
+          }
           await zipWritable.close();
         } else {
           const blobParts = zipChunks.map(

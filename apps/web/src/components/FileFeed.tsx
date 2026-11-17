@@ -443,6 +443,7 @@ export function FileFeed({
       (t) =>
         t.direction === 'incoming' &&
         t.purpose !== 'preview' &&
+        t.purpose !== 'zip' &&
         t.peerId === entry.ownerId &&
         t.fileId === entry.file.fileId &&
         (t.status === 'transferring' || t.status === 'completed'),
@@ -571,6 +572,7 @@ export function FileFeed({
                     (t) =>
                       t.direction === 'incoming' &&
                       t.purpose !== 'preview' &&
+                      t.purpose !== 'zip' &&
                       t.peerId === entry.ownerId &&
                       t.fileId === entry.file.fileId &&
                       t.status === 'completed',

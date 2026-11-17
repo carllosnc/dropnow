@@ -538,4 +538,83 @@ describe('SignalingRoom', () => {
       peer: { peerId: 'peer_host', displayName: 'New Name' },
     });
   });
+
+  it('does not evict an active peer when password validation fails', async () => {
+    const { room, addPeerSocket } = createMockRoom();
+    const mockHost = createMockSocket();
+    const mockAttacker = createMockSocket();
+
+    const wsHost = addPeerSocket(mockHost);
+    const wsAttacker = addPeerSocket(mockAttacker);
+
+    await room.webSocketMessage(
+      wsHost,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-protected',
+        peerId: 'peer_host',
+        displayName: 'Host',
+        password: 'secret-password',
+      }),
+    );
+
+    await room.webSocketMessage(
+      wsAttacker,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-protected',
+        peerId: 'peer_host',
+        displayName: 'Attacker',
+        password: 'wrong-password',
+      }),
+    );
+
+    expect(JSON.parse(mockAttacker.sent[0] ?? '{}')).toMatchObject({
+      type: 'error',
+      code: 'INVALID_PASSWORD',
+    });
+    expect(mockAttacker.closed).toBe(true);
+    expect(mockAttacker.closeCode).toBe(4003);
+    expect(mockHost.closed).toBe(false);
+    expect(mockHost.attachment).toMatchObject({
+      roomId: 'room-protected',
+      peerId: 'peer_host',
+      displayName: 'Host',
+    });
+  });
+
+  it('rejects duplicate join messages on the same WebSocket', async () => {
+    const { room, addPeerSocket } = createMockRoom();
+    const mockWs = createMockSocket();
+    const ws = addPeerSocket(mockWs);
+
+    await room.webSocketMessage(
+      ws,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-dup',
+        peerId: 'peer_first',
+        displayName: 'First',
+      }),
+    );
+
+    await room.webSocketMessage(
+      ws,
+      JSON.stringify({
+        type: 'join',
+        roomId: 'room-dup',
+        peerId: 'peer_second',
+        displayName: 'Second',
+      }),
+    );
+
+    expect(JSON.parse(mockWs.sent[1] ?? '{}')).toMatchObject({
+      type: 'error',
+      code: 'ALREADY_JOINED',
+    });
+    expect(mockWs.attachment).toMatchObject({
+      peerId: 'peer_first',
+      displayName: 'First',
+    });
+  });
 });

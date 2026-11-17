@@ -68,6 +68,15 @@ export function FilePreviewModal({
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copiedText, setCopiedText] = useState(false);
+  const copiedTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimerRef.current !== null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
+    };
+  }, []);
 
   const entryKey = entry
     ? `${entry.kind}:${entry.ownerId}:${entry.file.fileId}:${entry.isPeerReady ? '1' : '0'}`
@@ -204,7 +213,13 @@ export function FilePreviewModal({
     try {
       await navigator.clipboard.writeText(textContent);
       setCopiedText(true);
-      setTimeout(() => setCopiedText(false), 2000);
+      if (copiedTimerRef.current !== null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
+      copiedTimerRef.current = window.setTimeout(() => {
+        copiedTimerRef.current = null;
+        setCopiedText(false);
+      }, 2000);
     } catch {
       // Clipboard API may be unavailable
     }

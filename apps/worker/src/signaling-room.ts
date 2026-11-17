@@ -182,8 +182,17 @@ export class SignalingRoom extends DurableObject<Env> {
     displayName: string,
     password?: string,
   ): Promise<void> {
+    if (this.getAttachment(ws)) {
+      this.sendMessage(ws, {
+        type: 'error',
+        code: 'ALREADY_JOINED',
+        message: 'This connection has already joined the room.',
+      });
+      return;
+    }
+
     const existingPeers: PeerInfo[] = [];
-    let replacedSelf = false;
+    const socketsToReplace: WebSocket[] = [];
 
     for (const socket of this.ctx.getWebSockets()) {
       if (socket === ws) continue;
@@ -191,15 +200,7 @@ export class SignalingRoom extends DurableObject<Env> {
       if (!attachment) continue;
 
       if (attachment.peerId === peerId) {
-        replacedSelf = true;
-        // Evict stale socket with the same peerId (e.g. quick page reload)
-        // Clear attachment first so webSocketClose doesn't broadcast a spurious peer-left
-        socket.serializeAttachment(null);
-        try {
-          socket.close(1000, 'Replaced by new session');
-        } catch {
-          // Ignore close error
-        }
+        socketsToReplace.push(socket);
         continue;
       }
 
@@ -209,6 +210,7 @@ export class SignalingRoom extends DurableObject<Env> {
       });
     }
 
+    const replacedSelf = socketsToReplace.length > 0;
     const normalizedPassword =
       password && password.length > 0 ? password : undefined;
     const storedHash = await this.ctx.storage.get<string>(PASSWORD_HASH_KEY);
@@ -251,6 +253,17 @@ export class SignalingRoom extends DurableObject<Env> {
         );
       } else {
         await this.ctx.storage.delete(PASSWORD_HASH_KEY);
+      }
+    }
+
+    // Evict stale sockets with the same peerId only after authorization succeeds.
+    // Clear attachment first so webSocketClose doesn't broadcast a spurious peer-left.
+    for (const socket of socketsToReplace) {
+      socket.serializeAttachment(null);
+      try {
+        socket.close(1000, 'Replaced by new session');
+      } catch {
+        // Ignore close error
       }
     }
 

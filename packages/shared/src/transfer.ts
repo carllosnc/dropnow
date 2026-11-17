@@ -13,7 +13,7 @@ export type SharedFileInfo = z.infer<typeof SharedFileInfoSchema>;
 export const DataChannelControlMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('file-catalog'),
-    files: z.array(SharedFileInfoSchema),
+    files: z.array(SharedFileInfoSchema).max(1000),
   }),
   z.object({
     type: z.literal('file-request'),

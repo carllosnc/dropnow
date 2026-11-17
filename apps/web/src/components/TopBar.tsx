@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, Hash, Lock, LogOut, Power } from 'lucide-react';
 
 interface TopBarProps {
@@ -28,15 +28,30 @@ export function TopBar({
 }: TopBarProps) {
   const [roomInput, setRoomInput] = useState(roomId);
   const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     setRoomInput(roomId);
   }, [roomId]);
 
+  useEffect(() => {
+    return () => {
+      if (copiedTimerRef.current !== null) {
+        window.clearTimeout(copiedTimerRef.current);
+      }
+    };
+  }, []);
+
   const handleCopy = async () => {
     await onCopyInvite();
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (copiedTimerRef.current !== null) {
+      window.clearTimeout(copiedTimerRef.current);
+    }
+    copiedTimerRef.current = window.setTimeout(() => {
+      copiedTimerRef.current = null;
+      setCopied(false);
+    }, 2000);
   };
 
   return (
