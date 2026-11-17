@@ -138,12 +138,14 @@ export function App() {
     setActiveRoom(null);
     setLobbyError(message);
     setSelectedFilter('all');
+    setPreviewEntryKey(null);
   }, []);
 
   const handleRoomClosed = useCallback((reason: string) => {
     setActiveRoom(null);
     setLobbyError(reason);
     setSelectedFilter('all');
+    setPreviewEntryKey(null);
   }, []);
 
   const {
@@ -170,6 +172,13 @@ export function App() {
     onJoinError: handleJoinError,
     onRoomClosed: handleRoomClosed,
   });
+
+  useEffect(() => {
+    if (selectedFilter === 'all' || selectedFilter === 'me') return;
+    if (!peers.some((p) => p.peerId === selectedFilter)) {
+      setSelectedFilter('all');
+    }
+  }, [peers, selectedFilter]);
 
   const handleAddSharedFiles = useCallback(
     (fileList: FileList | File[]) => {
@@ -258,6 +267,7 @@ export function App() {
     setActiveRoom(null);
     setLobbyError(null);
     setSelectedFilter('all');
+    setPreviewEntryKey(null);
   }, []);
 
   const handleSwitchRoom = (nextRoom: string) => {
@@ -267,8 +277,10 @@ export function App() {
     url.searchParams.set('room', cleaned);
     window.history.replaceState(null, '', url.toString());
     setDraftRoomId(cleaned);
+    setLobbyError(null);
     setActiveRoom({ roomId: cleaned });
     setSelectedFilter('all');
+    setPreviewEntryKey(null);
   };
 
   if (!activeRoom) {
