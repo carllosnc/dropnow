@@ -12,6 +12,7 @@ import {
   User,
 } from 'lucide-react';
 import { Avatar } from './Avatar.js';
+import { GitHubButton } from './GitHubButton.js';
 
 type LobbyMode = 'create' | 'join';
 
@@ -115,16 +116,19 @@ export function RoomLobby({
     <div className="flex min-h-screen flex-col items-center justify-center bg-[#DEE9F9] px-4 py-8 text-[#111111]">
       <div className="w-full max-w-md rounded-3xl bg-white p-6 sm:p-8">
         {/* Brand Header */}
-        <div className="flex items-center gap-3">
-          <img src="/logo.png" alt="DropNow logo" className="h-9 w-9" />
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-[#111111]">
-              DropNow
-            </h1>
-            <p className="text-xs text-zinc-500">
-              Instant peer-to-peer file sharing
-            </p>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <img src="/logo.png" alt="DropNow logo" className="h-9 w-9" />
+            <div>
+              <h1 className="text-xl font-bold tracking-tight text-[#111111]">
+                DropNow
+              </h1>
+              <p className="text-xs text-zinc-500">
+                Instant peer-to-peer file sharing
+              </p>
+            </div>
           </div>
+          <GitHubButton showLabel />
         </div>
 
         {/* Mode Switcher */}

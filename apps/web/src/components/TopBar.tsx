@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, Hash, Lock, LogOut, Power } from 'lucide-react';
+import { GitHubButton } from './GitHubButton.js';
 
 interface TopBarProps {
   roomId: string;
@@ -179,6 +180,8 @@ export function TopBar({
             <span className="hidden sm:inline">Leave</span>
           </button>
         )}
+
+        <GitHubButton />
       </div>
     </header>
   );
